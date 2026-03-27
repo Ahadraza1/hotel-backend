@@ -1,0 +1,48 @@
+{
+  "name": "hotel-management-backend",
+  "version": "1.0.0",
+  "description": "Enterprise Multi-Branch Hotel Management System Backend (Node.js + Express + MongoDB)",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js",
+    "seed": "node src/seeder/seed.js",
+    "seed:rbac": "node src/seeder/rbac.seed.js",
+    "backfill:invoice-sources": "node src/scripts/backfillInvoiceSources.js",
+    "lint": "echo \"Add ESLint if needed\"",
+    "test": "echo \"No tests configured yet\""
+  },
+  "keywords": [
+    "hotel-management",
+    "multi-branch",
+    "mern",
+    "enterprise",
+    "rbac",
+    "saas"
+  ],
+  "author": "Your Name",
+  "license": "ISC",
+  "dependencies": {
+    "@faker-js/faker": "^10.3.0",
+    "bcryptjs": "^3.0.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^16.6.1",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.2.1",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^9.2.1",
+    "morgan": "^1.10.1",
+    "multer": "^2.0.2",
+    "nodemailer": "^8.0.1",
+    "pdfkit": "^0.17.2",
+    "razorpay": "^2.9.6",
+    "socket.io": "^4.8.3",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  }
+}

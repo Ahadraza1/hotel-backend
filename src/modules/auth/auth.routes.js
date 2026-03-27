@@ -1,0 +1,31 @@
+const express = require("express");
+const router = express.Router();
+const authController = require("./auth.controller");
+
+const requireAuth = require("../../middleware/requireAuth.middleware");
+const upload = require("../../middleware/upload.middleware");
+
+router.post("/register", authController.registerSuperAdmin);
+router.get("/signup-plans", authController.getSignupPlans);
+router.post("/organization-signup", authController.registerOrganization);
+router.post("/signup/checkout/order", authController.createSignupCheckoutOrder);
+router.post("/signup/checkout/verify", authController.verifySignupCheckout);
+router.post("/login", authController.login);
+router.post("/accept-invite", authController.acceptInvite);
+
+/*
+  GET CURRENT AUTH USER
+*/
+router.get("/me", requireAuth, authController.getMe);
+
+/*
+  UPDATE PROFILE (INCLUDING AVATAR)
+*/
+router.put(
+  "/update-profile",
+  requireAuth,
+  upload.single("avatar"),
+  authController.updateProfile
+);
+
+module.exports = router;
