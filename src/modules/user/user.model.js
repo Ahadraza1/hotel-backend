@@ -34,6 +34,9 @@ const userSchema = new mongoose.Schema(
         "HOUSEKEEPING",
         "HR_MANAGER",
         "RESTAURANT_MANAGER",
+        "FRONT_DESK",
+        "HOUSEKEEPING_LEAD",
+        "FINANCE_MANAGER",
       ],
       required: true,
     },
@@ -86,6 +89,12 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+
+    permissions: [
+      {
+        type: String,
+      },
+    ],
 
     isActive: {
       type: Boolean,

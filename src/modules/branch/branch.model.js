@@ -11,7 +11,7 @@ const branchSchema = new mongoose.Schema(
     },
 
     organizationId: {
-      type: String, // ✅ CHANGE TYPE
+      type: String, // CHANGE TYPE
       required: true,
       index: true,
     },
@@ -48,7 +48,7 @@ const branchSchema = new mongoose.Schema(
     },
 
     /*
-      🔥 TOTAL ROOMS
+      TOTAL ROOMS
     */
     totalRooms: {
       type: Number,
@@ -56,7 +56,7 @@ const branchSchema = new mongoose.Schema(
     },
 
     /*
-      🔥 FLOORS
+      FLOORS
     */
     floor: {
       type: Number,

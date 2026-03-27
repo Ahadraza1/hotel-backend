@@ -1,5 +1,7 @@
 const User = require("./user.model");
+const Role = require("../rbac/role.model");
 const bcrypt = require("bcryptjs");
+const mongoose = require("mongoose");
 
 const ensureUserManagementAccess = (actor, targetUser) => {
   if (actor.role === "SUPER_ADMIN") {
@@ -68,7 +70,9 @@ exports.getUsers = async (req, res) => {
       filter.organizationId = req.user.organizationId;
     }
 
-    const users = await User.find(filter).select("-password");
+    const users = await User.find(filter)
+      .select("-password")
+      .populate("roleRef", "_id name normalizedName");
 
     res.status(200).json({
       count: users.length,
@@ -201,41 +205,126 @@ exports.updateAvatar = async (req, res) => {
 };
 
 /*
-  Change User Role
+  Change User Role (Enhanced)
+  PATCH /users/:userId/role
 */
 exports.changeUserRole = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { role } = req.body;
+    const roleId = req.body?.roleId;
+    const roleKey = String(req.body?.role || "").trim().toUpperCase();
 
-    if (!role) {
-      return res.status(400).json({
-        message: "Role is required",
+    // 1. Restriction: Only Super Admin can edit roles
+    if (req.user.role !== "SUPER_ADMIN") {
+      return res.status(403).json({
+        success: false,
+        message: "Only Super Admin can change user roles",
       });
     }
 
-    const user = await User.findById(userId);
+    if (!roleId && !roleKey) {
+      return res.status(400).json({
+        success: false,
+        message: "role or roleId is required",
+      });
+    }
 
-    if (!user) {
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid userId",
+      });
+    }
+
+    if (roleId && !mongoose.Types.ObjectId.isValid(roleId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid roleId",
+      });
+    }
+
+    // 2. Fetch target user
+    const targetUser = await User.findById(userId);
+    if (!targetUser) {
       return res.status(404).json({
+        success: false,
         message: "User not found",
       });
     }
 
-    user.role = role;
-    await user.save();
+    // 3. Fetch the new role and its permissions
+    const roleQuery = roleId
+      ? { _id: roleId }
+      : {
+          $or: [{ normalizedName: roleKey }, { name: roleKey.replace(/_/g, " ") }],
+        };
+    const newRole = await Role.findOne(roleQuery).populate("permissions");
+    if (!newRole) {
+      return res.status(404).json({
+        success: false,
+        message: "Selected role not found",
+      });
+    }
+
+    // 4. Update user:
+    // - Use normalized name for consistency with User model enum
+    const normalizedRoleName = newRole.normalizedName || newRole.name.toUpperCase().replace(/\s+/g, "_");
+    
+    // Check if the role is valid for our User enum
+    const validRoles = [
+      "SUPER_ADMIN", "CORPORATE_ADMIN", "BRANCH_MANAGER", "RECEPTIONIST", 
+      "ACCOUNTANT", "HOUSEKEEPING", "HR_MANAGER", "RESTAURANT_MANAGER",
+      "FRONT_DESK", "HOUSEKEEPING_LEAD", "FINANCE_MANAGER"
+    ];
+
+    if (!validRoles.includes(normalizedRoleName)) {
+      return res.status(400).json({
+        success: false,
+        message: `Role ${normalizedRoleName} is not a valid system role`,
+      });
+    }
+
+    if (
+      targetUser.role === normalizedRoleName &&
+      targetUser.roleRef?.toString() === newRole._id.toString()
+    ) {
+      const existingUser = await User.findById(targetUser._id)
+        .select("-password")
+        .populate("roleRef", "_id name normalizedName");
+
+      return res.status(200).json({
+        success: true,
+        message: "User role updated successfully",
+        user: existingUser,
+      });
+    }
+
+    targetUser.role = normalizedRoleName;
+    targetUser.roleRef = newRole._id;
+    
+    // Assign permission keys/names to user.permissions
+    // Ensure we handle case where permission population might return nulls or non-documents
+    targetUser.permissions = (newRole.permissions || [])
+      .filter(p => p && (p.key || p.name))
+      .map(p => p.key || p.name);
+
+    await targetUser.save();
+
+    const updatedUser = await User.findById(targetUser._id)
+      .select("-password")
+      .populate("roleRef", "_id name normalizedName");
 
     return res.status(200).json({
+      success: true,
       message: "User role updated successfully",
-      data: {
-        userId: user._id,
-        role: user.role,
-      },
+      user: updatedUser
     });
   } catch (error) {
-    console.error("Change role error:", error);
+    console.error("Change role error FULL DETAILS:", error);
     return res.status(500).json({
-      message: "Failed to change user role",
+      success: false,
+      message: error.message || "Failed to update user role",
+      stack: process.env.NODE_ENV === "development" ? error.stack : undefined
     });
   }
 };

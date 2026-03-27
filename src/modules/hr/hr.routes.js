@@ -36,6 +36,22 @@ router.get(
   hrController.getStaff
 );
 
+router.patch(
+  "/staff/:staffId",
+  requireAuth,
+  requirePermission("ACCESS_HR"),
+  auditMiddleware("UPDATE_STAFF", "HR", "Updated staff member"),
+  hrController.updateStaff
+);
+
+router.delete(
+  "/staff/:staffId",
+  requireAuth,
+  requirePermission("ACCESS_HR"),
+  auditMiddleware("DELETE_STAFF", "HR", "Deleted staff member"),
+  hrController.deleteStaff
+);
+
 
 /*
   ===========================
@@ -106,6 +122,22 @@ router.patch(
   requirePermission("ACCESS_HR"),
   auditMiddleware("MARK_PAYROLL_PAID", "HR", "Marked payroll as paid"),
   hrController.markPayrollPaid
+);
+
+router.patch(
+  "/payroll/:payrollId",
+  requireAuth,
+  requirePermission("ACCESS_HR"),
+  auditMiddleware("UPDATE_PAYROLL", "HR", "Updated payroll"),
+  hrController.updatePayroll
+);
+
+router.delete(
+  "/payroll/:payrollId",
+  requireAuth,
+  requirePermission("ACCESS_HR"),
+  auditMiddleware("DELETE_PAYROLL", "HR", "Deleted payroll"),
+  hrController.deletePayroll
 );
 
 

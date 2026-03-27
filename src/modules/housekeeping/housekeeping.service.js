@@ -1,5 +1,6 @@
 const Housekeeping = require("./housekeeping.model");
 const Room = require("../room/room.model");
+const notificationService = require("../notification/notification.service");
 const mongoose = require("mongoose");
 
 /*
@@ -62,6 +63,15 @@ exports.createTask = async (data, user) => {
 
   // Mark room DIRTY
   await Room.findByIdAndUpdate(roomId, { status: "MAINTENANCE" });
+
+  await notificationService.createNotificationSafely({
+    title: "Housekeeping task created",
+    message: `A housekeeping task was created for room ${room.roomNumber || roomId}.`,
+    type: "housekeeping",
+    organizationId: room.organizationId,
+    branchId: room.branchId,
+    module: "HOUSEKEEPING",
+  });
 
   return task;
 };
@@ -133,6 +143,15 @@ exports.assignTask = async (taskId, assignedTo, user) => {
   task.status = "ASSIGNED";
 
   await task.save();
+
+  await notificationService.createNotificationSafely({
+    title: "Housekeeping status updated",
+    message: `Task ${task.housekeepingId} moved to ${status}.`,
+    type: "housekeeping",
+    organizationId: task.organizationId,
+    branchId: task.branchId,
+    module: "HOUSEKEEPING",
+  });
 
   return task;
 };

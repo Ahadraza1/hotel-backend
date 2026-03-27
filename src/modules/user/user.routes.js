@@ -39,6 +39,6 @@ router.patch("/:userId/status", requireAuth, userController.updateUserStatus);
 
 router.delete("/:userId", requireAuth, userController.deleteUser);
 
-router.patch("/:userId/change-role", authMiddleware, userController.changeUserRole);
+router.patch("/:userId/role", requireAuth, userController.changeUserRole);
 
 module.exports = router;

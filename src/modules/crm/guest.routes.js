@@ -46,6 +46,17 @@ router.put(
 );
 
 /*
+  Delete Guest
+  DELETE /crm/guests/:guestId
+*/
+router.delete(
+  "/guests/:guestId",
+  requireAuth,
+  requirePermission("ACCESS_CRM"),
+  guestController.deleteGuest
+);
+
+/*
   Toggle VIP
   PATCH /crm/guests/:guestId/vip
 */

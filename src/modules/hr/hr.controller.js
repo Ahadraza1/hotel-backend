@@ -36,6 +36,29 @@ exports.getStaff = asyncHandler(async (req, res) => {
   });
 });
 
+exports.updateStaff = asyncHandler(async (req, res) => {
+  const { staffId } = req.params;
+
+  const staff = await hrService.updateStaff(staffId, req.body, req.user);
+
+  return res.status(200).json({
+    success: true,
+    message: "Staff updated successfully",
+    data: staff,
+  });
+});
+
+exports.deleteStaff = asyncHandler(async (req, res) => {
+  const { staffId } = req.params;
+
+  const result = await hrService.deleteStaff(staffId, req.user);
+
+  return res.status(200).json({
+    success: true,
+    message: result.message,
+  });
+});
+
 
 /* ===========================
    ATTENDANCE CONTROLLERS
@@ -164,5 +187,28 @@ exports.getPayroll = asyncHandler(async (req, res) => {
     success: true,
     count: payrollList.length,
     data: payrollList,
+  });
+});
+
+exports.updatePayroll = asyncHandler(async (req, res) => {
+  const { payrollId } = req.params;
+
+  const payroll = await hrService.updatePayroll(payrollId, req.body, req.user);
+
+  return res.status(200).json({
+    success: true,
+    message: "Payroll updated successfully",
+    data: payroll,
+  });
+});
+
+exports.deletePayroll = asyncHandler(async (req, res) => {
+  const { payrollId } = req.params;
+
+  const result = await hrService.deletePayroll(payrollId, req.user);
+
+  return res.status(200).json({
+    success: true,
+    message: result.message,
   });
 });

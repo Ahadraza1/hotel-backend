@@ -185,3 +185,44 @@ exports.getInvoicePDF = asyncHandler(async (req, res) => {
 
   fs.createReadStream(filePath).pipe(res);
 });
+
+/*
+  Update Invoice
+*/
+exports.updateInvoice = asyncHandler(async (req, res) => {
+  const { invoiceId } = req.params;
+
+  if (!invoiceId) {
+    throw new AppError('Invoice ID is required', 400);
+  }
+
+  const updatedInvoice = await invoiceService.updateInvoice(
+    invoiceId,
+    req.body,
+    req.user,
+  );
+
+  return res.status(200).json({
+    success: true,
+    message: 'Invoice updated successfully',
+    data: updatedInvoice,
+  });
+});
+
+/*
+  Delete Invoice
+*/
+exports.deleteInvoice = asyncHandler(async (req, res) => {
+  const { invoiceId } = req.params;
+
+  if (!invoiceId) {
+    throw new AppError('Invoice ID is required', 400);
+  }
+
+  const result = await invoiceService.deleteInvoice(invoiceId, req.user);
+
+  return res.status(200).json({
+    success: true,
+    message: result.message,
+  });
+});

@@ -2,7 +2,7 @@ const Organization = require("../organization/organization.model");
 const Branch = require("../branch/branch.model");
 const mongoose = require("mongoose");
 const User = require("../user/user.model");
-const Booking = require("../booking/booking.model"); // ADD THIS
+const Booking = require("../booking/booking.model");
 const Invoice = require("../invoice/invoice.model");
 const POSOrder = require("../pos/posOrder.model");
 const Room = require("../room/room.model");
@@ -457,15 +457,11 @@ const getDashboardOverview = async (req, res) => {
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const startOfQuarter = new Date(now.getFullYear(), now.getMonth() - 3, 1);
 
-    /*
-      SUPER ADMIN → Global data
-    */
     if (role === "SUPER_ADMIN") {
       totalOrganizations = await Organization.countDocuments();
       totalBranches = await Branch.countDocuments();
       activeUsers = await User.countDocuments({ isActive: true });
 
-      // TOTAL REVENUE
       const totalAgg = await Booking.aggregate([
         { $match: { paymentStatus: "PAID" } },
         { $group: { _id: null, total: { $sum: "$totalAmount" } } },
@@ -473,7 +469,6 @@ const getDashboardOverview = async (req, res) => {
 
       totalRevenue = totalAgg[0]?.total || 0;
 
-      // MONTHLY
       const monthlyAgg = await Booking.aggregate([
         {
           $match: {
@@ -486,7 +481,6 @@ const getDashboardOverview = async (req, res) => {
 
       monthlyRevenue = monthlyAgg[0]?.total || 0;
 
-      // QUARTERLY
       const quarterlyAgg = await Booking.aggregate([
         {
           $match: {
@@ -498,12 +492,7 @@ const getDashboardOverview = async (req, res) => {
       ]);
 
       quarterlyRevenue = quarterlyAgg[0]?.total || 0;
-    }
-
-    /*
-      CORPORATE ADMIN
-    */
-    else if (role === "CORPORATE_ADMIN") {
+    } else if (role === "CORPORATE_ADMIN") {
       totalOrganizations = 1;
 
       totalBranches = await Branch.countDocuments({
@@ -540,12 +529,7 @@ const getDashboardOverview = async (req, res) => {
       ]);
 
       quarterlyRevenue = quarterlyAgg[0]?.total || 0;
-    }
-
-    /*
-      BRANCH MANAGER
-    */
-    else if (role === "BRANCH_MANAGER") {
+    } else if (role === "BRANCH_MANAGER") {
       totalOrganizations = 1;
       totalBranches = 1;
 

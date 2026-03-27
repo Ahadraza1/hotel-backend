@@ -210,3 +210,58 @@ exports.deactivateInvoice = async (invoiceId, user) => {
 
   return invoice;
 };
+
+/*
+  Update Invoice
+*/
+exports.updateInvoice = async (invoiceId, data, user) => {
+  requirePermission(user, 'ACCESS_FINANCE');
+
+  const invoice = await Invoice.findOne({
+    invoiceId,
+    branchId: user.branchId,
+  });
+
+  if (!invoice) {
+    throw new Error('Invoice not found');
+  }
+
+  // Update allowed fields
+  const allowedUpdates = [
+    'status',
+    'totalAmount',
+    'taxAmount',
+    'finalAmount',
+    'paidAmount',
+    'dueAmount',
+    'type',
+  ];
+
+  allowedUpdates.forEach((field) => {
+    if (data[field] !== undefined) {
+      invoice[field] = data[field];
+    }
+  });
+
+  await invoice.save();
+
+  return invoice;
+};
+
+/*
+  Hard Delete Invoice
+*/
+exports.deleteInvoice = async (invoiceId, user) => {
+  requirePermission(user, 'ACCESS_FINANCE');
+
+  const result = await Invoice.deleteOne({
+    invoiceId,
+    branchId: user.branchId,
+  });
+
+  if (result.deletedCount === 0) {
+    throw new Error('Invoice not found');
+  }
+
+  return { message: 'Invoice deleted successfully' };
+};

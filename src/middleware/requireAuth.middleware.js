@@ -55,6 +55,7 @@ const requireAuth = async (req, res, next) => {
         ? decoded.role.toUpperCase().replace(/\s+/g, "_")
         : null,
       permissions: decoded.permissions || [],
+      roleRef: decoded.roleRef || null,
       organizationId: decoded.organizationId || null,
       branchId: activeBranchId || null,
       isPlatformAdmin: decoded.isPlatformAdmin || false,

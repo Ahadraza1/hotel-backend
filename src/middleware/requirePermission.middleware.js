@@ -15,14 +15,17 @@ const requirePermission = (permissionName) => {
     }
 
     try {
-      const roleDoc = await Role.findOne({ name: role }).populate(
+      const roleQuery = req.user.roleRef
+        ? { _id: req.user.roleRef }
+        : { normalizedName: role };
+      const roleDoc = await Role.findOne(roleQuery).populate(
         "permissions",
-        "name",
+        "name key",
       );
 
       const userPermissions = Array.isArray(roleDoc?.permissions)
         ? roleDoc.permissions.map((permission) =>
-            permission.name.trim().toUpperCase(),
+            (permission.key || permission.name).trim().toUpperCase(),
           )
         : [];
 

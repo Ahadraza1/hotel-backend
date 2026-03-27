@@ -7,6 +7,7 @@ const POSCategory = require("./posCategory.model");
 const POSTable = require("./posTable.model");
 const Branch = require("../branch/branch.model");
 const branchSettingsService = require("../branchSettings/branchSettings.service");
+const notificationService = require("../notification/notification.service");
 const mongoose = require("mongoose");
 
 /*
@@ -179,6 +180,15 @@ exports.createOrder = async (data, user) => {
   const io = getIO();
   io.to(`branch_${branchId}`).emit("new-order", order);
 
+  await notificationService.createNotificationSafely({
+    title: "New POS order created",
+    message: `Order ${order.orderCode} was created for branch ${branch.name}.`,
+    type: "pos",
+    organizationId,
+    branchId,
+    module: "POS",
+  });
+
   return order;
 };
 
@@ -281,6 +291,15 @@ exports.payOrder = async (orderId, paymentMethod, user) => {
     dueAmount: 0,
 
     createdBy: user._id,
+  });
+
+  await notificationService.createNotificationSafely({
+    title: "Restaurant invoice generated",
+    message: `Invoice ${invoice.invoiceId} was generated for order ${order.orderCode}.`,
+    type: "invoice",
+    organizationId: order.organizationId,
+    branchId: order.branchId,
+    module: "FINANCE",
   });
 
   order.invoiceLinked = true;

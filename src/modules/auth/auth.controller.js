@@ -57,6 +57,22 @@ const getDepartmentFromRole = (role) => {
 const normalizePlanCode = (value) =>
   PLAN_ALIASES[String(value || "").trim().toUpperCase()] || "STARTER";
 
+const getRolePermissionsForUser = async (user) => {
+  const roleQuery = user?.roleRef
+    ? { _id: user.roleRef }
+    : {
+        normalizedName: String(user?.role || "")
+          .trim()
+          .toUpperCase()
+          .replace(/\s+/g, "_"),
+      };
+  const roleData = await Role.findOne(roleQuery).populate("permissions");
+
+  return roleData
+    ? roleData.permissions.map((permission) => permission.key || permission.name)
+    : [];
+};
+
 const sanitizeSignupPayload = (payload = {}) => {
   const organizationName = String(payload.organizationName || "").trim();
   const businessType = String(payload.businessType || "").trim().toUpperCase();
@@ -144,7 +160,8 @@ const reserveSystemIdentifier = async (organizationName) => {
 
     const existing = await Organization.findOne({
       systemIdentifier: candidate,
-    }).lean();
+    })
+      .lean();
 
     if (!existing) {
       return candidate;
@@ -553,10 +570,7 @@ exports.login = async (req, res) => {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    const roleData = await Role.findOne({ name: user.role }).populate(
-      "permissions",
-    );
-    const permissions = roleData ? roleData.permissions.map((p) => p.name) : [];
+    const permissions = await getRolePermissionsForUser(user);
     const subscriptionAccess = await getSubscriptionAccessForUser(user);
 
     const payload = {
@@ -564,6 +578,7 @@ exports.login = async (req, res) => {
       userId: user._id,
       role: user.role,
       permissions,
+      roleRef: user.roleRef || null,
       organizationId: user.organizationId,
       branchId: user.branchId,
       isPlatformAdmin: user.isPlatformAdmin,
@@ -705,11 +720,7 @@ exports.getMe = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    const roleData = await Role.findOne({ name: user.role }).populate(
-      "permissions",
-    );
-
-    const permissions = roleData ? roleData.permissions.map((p) => p.name) : [];
+    const permissions = await getRolePermissionsForUser(user);
     const subscriptionAccess = await getSubscriptionAccessForUser(user);
 
     res.json({

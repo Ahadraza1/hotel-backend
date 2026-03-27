@@ -99,19 +99,19 @@ const organizationSchema = new mongoose.Schema(
       default: true,
     },
 
-    // ✅ NEW FIELD — Organization Block Status
+    // NEW FIELD - Organization Block Status
     isBlocked: {
       type: Boolean,
       default: false,
     },
 
-    // ✅ When it was blocked
+    // When it was blocked
     blockedAt: {
       type: Date,
       default: null,
     },
 
-    // ✅ Who blocked it
+    // Who blocked it
     blockedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

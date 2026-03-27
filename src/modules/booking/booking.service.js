@@ -3,6 +3,7 @@ const Room = require("../room/room.model");
 const Invoice = require("../invoice/invoice.model");
 const guestService = require("../crm/guest.service");
 const branchSettingsService = require("../branchSettings/branchSettings.service");
+const notificationService = require("../notification/notification.service");
 const mongoose = require("mongoose");
 const { v4: uuidv4 } = require("uuid");
 
@@ -177,15 +178,21 @@ exports.createBooking = async (data, user) => {
     session.endSession();
 
     // 🔥 Attach identity docs before CRM sync
-const bookingData = bookingArr[0].toObject();
+    const bookingData = bookingArr[0].toObject();
 
-bookingData.mainGuestIdentity = mainGuestIdentity || null;
-bookingData.guestsIdentity = guestsIdentity || [];
+    bookingData.mainGuestIdentity = mainGuestIdentity || null;
+    bookingData.guestsIdentity = guestsIdentity || [];
 
-await guestService.syncGuestFromBooking(
-  bookingData,
-  user
-);
+    await guestService.syncGuestFromBooking(bookingData, user);
+
+    await notificationService.createNotificationSafely({
+      title: "New booking created",
+      message: `Booking ${bookingArr[0].bookingId} was created for ${guestName}.`,
+      type: "booking",
+      organizationId: branch.organizationId,
+      branchId: branch._id,
+      module: "BOOKING",
+    });
 
     return bookingArr[0];
   } catch (error) {
@@ -308,6 +315,26 @@ exports.updateBooking = async (bookingId, data, user) => {
 
     await session.commitTransaction();
     session.endSession();
+
+    await notificationService.createNotificationSafely({
+      title: "Booking status updated",
+      message: `Booking ${booking.bookingId} moved to ${status}.`,
+      type: "booking",
+      organizationId: booking.organizationId,
+      branchId: booking.branchId,
+      module: "BOOKING",
+    });
+
+    if (status === "CHECKED_OUT") {
+      await notificationService.createNotificationSafely({
+        title: "Room invoice generated",
+        message: `A room invoice was generated for booking ${booking.bookingId}.`,
+        type: "invoice",
+        organizationId: booking.organizationId,
+        branchId: booking.branchId,
+        module: "FINANCE",
+      });
+    }
 
     return booking;
   } catch (error) {

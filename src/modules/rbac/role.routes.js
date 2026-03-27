@@ -14,11 +14,25 @@ router.get(
   roleController.getRoles,
 );
 
+router.post(
+  "/",
+  requireAuth,
+  requirePermission("ACCESS_USERS"),
+  roleController.createRole,
+);
+
 router.put(
   "/:roleId/permissions",
   requireAuth,
   requirePermission("ACCESS_USERS"),
   roleController.updateRolePermissions,
+);
+
+router.delete(
+  "/:roleId",
+  requireAuth,
+  requirePermission("ACCESS_USERS"),
+  roleController.deleteRole,
 );
 
 module.exports = router;

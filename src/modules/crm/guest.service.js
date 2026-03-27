@@ -119,6 +119,28 @@ exports.updateGuest = async (guestId, data, user) => {
 };
 
 /*
+  Delete Guest
+*/
+exports.deleteGuest = async (guestId, user) => {
+  requirePermission(user, "ACCESS_CRM");
+
+  const guest = await Guest.findOne({
+    guestId,
+    branchId: user.branchId,
+    isActive: true,
+  });
+
+  if (!guest) {
+    throw new Error("Guest not found");
+  }
+
+  guest.isActive = false;
+  await guest.save();
+
+  return { message: "Guest deleted successfully" };
+};
+
+/*
   Toggle VIP
 */
 exports.toggleVIP = async (guestId, user) => {

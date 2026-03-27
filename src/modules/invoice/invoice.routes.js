@@ -42,9 +42,31 @@ router.patch(
   invoiceController.deactivateInvoice
 );
 
+/*
+  Update Invoice
+  PATCH /api/invoices/:invoiceId
+*/
+router.patch(
+  "/:invoiceId",
+  requireAuth,
+  requirePermission("ACCESS_FINANCE"),
+  auditMiddleware("UPDATE_INVOICE", "INVOICE", "Updated invoice"),
+  invoiceController.updateInvoice
+);
 
-// ✅ Download Invoice PDF
+/*
+  Delete Invoice
+  DELETE /api/invoices/:invoiceId
+*/
+router.delete(
+  "/:invoiceId",
+  requireAuth,
+  requirePermission("ACCESS_FINANCE"),
+  auditMiddleware("DELETE_INVOICE", "INVOICE", "Deleted invoice"),
+  invoiceController.deleteInvoice
+);
 
+// Download Invoice PDF
 router.get(
   "/:invoiceId/pdf",
   requireAuth,

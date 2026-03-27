@@ -3,6 +3,7 @@ const Attendance = require("./attendance.model");
 const Payroll = require("./payroll.model");
 const mongoose = require("mongoose");
 const User = require("../user/user.model");
+const notificationService = require("../notification/notification.service");
 
 /*
   Permission Helper
@@ -180,6 +181,15 @@ exports.createStaff = async (data, user) => {
     createdBy:user.id || user.userId,
   });
 
+  await notificationService.createNotificationSafely({
+    title: "Staff member added",
+    message: `A new staff member was added to branch ${branch.name}.`,
+    type: "hr",
+    organizationId: branch.organizationId,
+    branchId: branch._id,
+    module: "HR",
+  });
+
   return staff;
 };
 
@@ -303,6 +313,57 @@ exports.getStaff = async (user, branchId) => {
   return [...userRows, ...standaloneStaffRows].sort((a, b) => 0); // keep order stable
 };
 
+exports.updateStaff = async (staffId, data, user) => {
+  requirePermission(user, "ACCESS_HR");
+
+  const staff = await Staff.findOne(
+    buildStaffLookupQuery(staffId, user.branchId || data.branchId),
+  );
+
+  if (!staff || !staff.isActive) {
+    const error = new Error("Staff not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const allowedUpdates = [
+    "firstName",
+    "lastName",
+    "department",
+    "designation",
+    "salary",
+  ];
+
+  allowedUpdates.forEach((field) => {
+    if (data[field] !== undefined) {
+      staff[field] = data[field];
+    }
+  });
+
+  await staff.save();
+
+  return staff;
+};
+
+exports.deleteStaff = async (staffId, user) => {
+  requirePermission(user, "ACCESS_HR");
+
+  const staff = await Staff.findOne(
+    buildStaffLookupQuery(staffId, user.branchId),
+  );
+
+  if (!staff || !staff.isActive) {
+    const error = new Error("Staff not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  staff.isActive = false;
+  await staff.save();
+
+  return { message: "Staff deleted successfully" };
+};
+
 /* ===========================
    ATTENDANCE
 =========================== */
@@ -363,6 +424,15 @@ exports.checkIn = async (staffId, branchId, user) => {
     checkInTime,
     isLate,
     createdBy: user.id || user.userId,
+  });
+
+  await notificationService.createNotificationSafely({
+    title: "Staff check-in recorded",
+    message: `A check-in was recorded for staff ${resolvedStaffId}.`,
+    type: "hr",
+    organizationId: staff.organizationId,
+    branchId: staff.branchId,
+    module: "HR",
   });
 
   return attendance;
@@ -504,6 +574,15 @@ exports.generatePayroll = async (staffId, branchId, month, year, user) => {
     generatedBy: user.id || user.userId,
   });
 
+  await notificationService.createNotificationSafely({
+    title: "Payroll generated",
+    message: `Payroll was generated for staff ${resolvedStaffId} for ${month}/${year}.`,
+    type: "hr",
+    organizationId: staff.organizationId,
+    branchId: staff.branchId,
+    module: "HR",
+  });
+
   return payroll;
 };
 
@@ -535,4 +614,61 @@ exports.getPayroll = async (user, branchId) => {
     branchId: buildBranchIdFilter(branchId),
     isActive: true,
   }).sort({ createdAt: -1 });
+};
+
+exports.updatePayroll = async (payrollId, data, user) => {
+  requirePermission(user, "ACCESS_HR");
+
+  const payroll = await Payroll.findOne({
+    payrollId,
+    branchId: buildBranchIdFilter(user.branchId),
+    isActive: true,
+  });
+
+  if (!payroll) {
+    const error = new Error("Payroll not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const allowedUpdates = ["month", "year", "netSalary", "status"];
+
+  allowedUpdates.forEach((field) => {
+    if (data[field] !== undefined) {
+      payroll[field] = data[field];
+    }
+  });
+
+  if (data.status === "PAID") {
+    payroll.paidAt = payroll.paidAt || new Date();
+  }
+
+  if (data.status === "UNPAID") {
+    payroll.paidAt = undefined;
+  }
+
+  await payroll.save();
+
+  return payroll;
+};
+
+exports.deletePayroll = async (payrollId, user) => {
+  requirePermission(user, "ACCESS_HR");
+
+  const payroll = await Payroll.findOne({
+    payrollId,
+    branchId: buildBranchIdFilter(user.branchId),
+    isActive: true,
+  });
+
+  if (!payroll) {
+    const error = new Error("Payroll not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  payroll.isActive = false;
+  await payroll.save();
+
+  return { message: "Payroll deleted successfully" };
 };

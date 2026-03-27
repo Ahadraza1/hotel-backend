@@ -78,6 +78,20 @@ exports.updateGuest = asyncHandler(async (req, res) => {
   });
 });
 
+/*
+  Delete Guest
+*/
+exports.deleteGuest = asyncHandler(async (req, res) => {
+  const { guestId } = req.params;
+
+  const result = await guestService.deleteGuest(guestId, req.user);
+
+  return res.status(200).json({
+    success: true,
+    message: result.message,
+  });
+});
+
 
 /*
   Toggle VIP

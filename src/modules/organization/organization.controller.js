@@ -38,26 +38,17 @@ exports.createOrganization = async (req, res) => {
   Get All Organizations
   SUPER_ADMIN only
 */
-
 exports.getAllOrganizations = async (req, res) => {
   try {
     let organizations;
 
-    // SUPER ADMIN → All organizations
     if (req.user.role === "SUPER_ADMIN") {
       organizations = await Organization.find();
-    }
-
-    // CORPORATE ADMIN → Only his organization
-    else if (req.user.role === "CORPORATE_ADMIN") {
+    } else if (req.user.role === "CORPORATE_ADMIN") {
       organizations = await Organization.find({
         organizationId: req.user.organizationId,
       });
-    }
-
-    // BRANCH MANAGER → Organization of his branch
-    else if (req.user.role === "BRANCH_MANAGER") {
-
+    } else if (req.user.role === "BRANCH_MANAGER") {
       const branch = await Branch.findById(req.user.branchId);
 
       if (!branch) {
@@ -69,9 +60,7 @@ exports.getAllOrganizations = async (req, res) => {
       organizations = await Organization.find({
         organizationId: branch.organizationId,
       });
-    }
-
-    else {
+    } else {
       return res.status(403).json({
         message: "Access denied",
       });
@@ -170,7 +159,6 @@ exports.getAllOrganizations = async (req, res) => {
       count: enrichedOrganizations.length,
       data: enrichedOrganizations,
     });
-
   } catch (error) {
     console.error("GET ALL ORG ERROR:", error);
 
@@ -179,6 +167,7 @@ exports.getAllOrganizations = async (req, res) => {
     });
   }
 };
+
 /*
   Get Organization By ID
 */
@@ -303,39 +292,24 @@ exports.deleteOrganization = async (req, res) => {
 
     const orgId = organization.organizationId;
 
-    /*
-      1️⃣ Find all users of this organization
-    */
     const users = await User.find({
       organizationId: orgId,
     });
 
     const userIds = users.map((u) => u._id);
 
-    /*
-      2️⃣ Delete refresh tokens
-    */
     await RefreshToken.deleteMany({
       userId: { $in: userIds },
     });
 
-    /*
-      3️⃣ Delete users
-    */
     await User.deleteMany({
       organizationId: orgId,
     });
 
-    /*
-      4️⃣ Delete branches
-    */
     await Branch.deleteMany({
       organizationId: orgId,
     });
 
-    /*
-      5️⃣ Delete organization
-    */
     await Organization.findByIdAndDelete(id);
 
     res.status(200).json({
@@ -419,7 +393,6 @@ exports.blockOrganization = async (req, res) => {
       });
     }
 
-    // ✅ 1. Block organization
     const updated = await Organization.findByIdAndUpdate(
       id,
       {
@@ -430,14 +403,12 @@ exports.blockOrganization = async (req, res) => {
       { new: true },
     );
 
-    // ✅ 2. Find all users of this organization
     const users = await User.find({
       organizationId: updated._id,
     });
 
     const userIds = users.map((u) => u._id);
 
-    // ✅ 3. Delete all refresh tokens (force logout)
     await RefreshToken.deleteMany({
       userId: { $in: userIds },
     });

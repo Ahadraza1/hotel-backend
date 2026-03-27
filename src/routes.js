@@ -24,6 +24,7 @@ const housekeepingRoutes = require("./modules/housekeeping/housekeeping.routes")
 const guestRoutes = require("./modules/crm/guest.routes");
 const hrRoutes = require("./modules/hr/hr.routes");
 const invoiceRoutes = require("./modules/invoice/invoice.routes");
+const notificationRoutes = require("./modules/notification/notification.routes");
 /* ✅ NEW POS ROUTES */
 const posRoutes = require("./modules/pos/pos.routes");
 const invitationRoutes = require("./modules/invitation/invitation.routes");
@@ -58,6 +59,7 @@ router.use("/integrations", integrationsRoutes);
 router.use("/housekeeping", housekeepingRoutes);
 router.use("/crm", guestRoutes);
 router.use("/invoices", invoiceRoutes);
+router.use("/notifications", notificationRoutes);
 /* ✅ NEW POS ROUTES */
 router.use("/hr", hrRoutes);
 router.use("/pos", posRoutes);
