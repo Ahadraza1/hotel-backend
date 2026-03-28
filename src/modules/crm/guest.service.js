@@ -309,7 +309,9 @@ exports.syncGuestFromBooking = async (booking, user) => {
   guest.currentStatus = booking.status;
 
   // Save documents
-  if (booking.identityDocument?.url) {
+  if (booking.identityProof?.url) {
+    guest.documents.push(booking.identityProof.url);
+  } else if (booking.identityDocument?.url) {
     guest.documents.push(booking.identityDocument.url);
   } else if (booking.mainGuestIdentity) {
     guest.documents.push(booking.mainGuestIdentity);

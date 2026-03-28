@@ -30,6 +30,7 @@ const upload = multer({ storage });
   Upload Middleware
 */
 exports.uploadGuestIdentities = upload.fields([
+  { name: "identityProof", maxCount: 1 },
   { name: "identityDocument", maxCount: 1 },
   { name: "mainGuestIdentity", maxCount: 1 },
   { name: "guestsIdentity", maxCount: 20 },
@@ -65,10 +66,16 @@ const parseGuestsFromBody = (body) => {
 
 const hydrateBookingBody = (req) => {
   const identityFile =
+    req.files?.identityProof?.[0] ||
     req.files?.identityDocument?.[0] || req.files?.mainGuestIdentity?.[0];
 
   if (identityFile) {
     const relativePath = `/uploads/guest-identities/${identityFile.filename}`;
+    req.body.identityProof = {
+      url: relativePath,
+      fileName: identityFile.originalname,
+      fileType: identityFile.mimetype,
+    };
     req.body.identityDocument = {
       url: relativePath,
       fileName: identityFile.originalname,

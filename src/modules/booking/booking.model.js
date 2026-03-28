@@ -89,6 +89,24 @@ const bookingSchema = new mongoose.Schema(
       lowercase: true,
     },
 
+    identityProof: {
+      url: {
+        type: String,
+        trim: true,
+        default: null,
+      },
+      fileName: {
+        type: String,
+        trim: true,
+        default: null,
+      },
+      fileType: {
+        type: String,
+        trim: true,
+        default: null,
+      },
+    },
+
     identityDocument: {
       url: {
         type: String,

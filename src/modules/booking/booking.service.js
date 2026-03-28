@@ -33,6 +33,36 @@ const requirePermission = (user, permission) => {
 const VALID_BOOKING_SOURCES = ["Walk-in", "Pre-booking", "Online"];
 const VALID_PAYMENT_METHODS = ["CASH", "CARD", "UPI"];
 
+const normalizeIdentityProof = (source = {}) => {
+  const explicitIdentityProof = source.identityProof;
+  if (explicitIdentityProof && typeof explicitIdentityProof === "object") {
+    return {
+      url: explicitIdentityProof.url || null,
+      fileType: explicitIdentityProof.fileType || null,
+      fileName: explicitIdentityProof.fileName || null,
+    };
+  }
+
+  const legacyIdentityDocument = source.identityDocument;
+  if (legacyIdentityDocument && typeof legacyIdentityDocument === "object") {
+    return {
+      url: legacyIdentityDocument.url || null,
+      fileType: legacyIdentityDocument.fileType || null,
+      fileName: legacyIdentityDocument.fileName || null,
+    };
+  }
+
+  if (typeof source.mainGuestIdentity === "string" && source.mainGuestIdentity.trim()) {
+    return {
+      url: source.mainGuestIdentity.trim(),
+      fileType: null,
+      fileName: null,
+    };
+  }
+
+  return null;
+};
+
 const normalizeGuests = (guests) =>
   Array.isArray(guests)
     ? guests.map((guest) => ({
@@ -266,6 +296,7 @@ const serializeBooking = async (booking) => {
 
   const room = populatedBooking.roomId || null;
   const branch = populatedBooking.branchId || null;
+  const identityProof = normalizeIdentityProof(populatedBooking);
   const taxPercentage =
     invoice && invoice.finalAmount > 0
       ? Number(
@@ -285,6 +316,7 @@ const serializeBooking = async (booking) => {
 
   return {
     ...populatedBooking,
+    identityProof,
     room: room
       ? {
           _id: room._id,
@@ -371,6 +403,7 @@ exports.createBooking = async (data, user) => {
       guestEmail,
       totalGuests,
       guests,
+      identityProof,
       identityDocument,
       mainGuestIdentity,
       guestsIdentity,
@@ -379,7 +412,12 @@ exports.createBooking = async (data, user) => {
       checkOutDate,
       checkOutTime,
     } = data;
-    const mainGuestIdentityUrl = mainGuestIdentity || identityDocument?.url || null;
+    const normalizedIdentityProof = normalizeIdentityProof({
+      identityProof,
+      identityDocument,
+      mainGuestIdentity,
+    });
+    const mainGuestIdentityUrl = normalizedIdentityProof?.url || null;
 
     if (!roomId || !guestName || !guestType || !checkInDate || !checkOutDate) {
       throw new Error("Required fields are missing");
@@ -420,6 +458,7 @@ exports.createBooking = async (data, user) => {
           guestPhone,
           guestEmail,
           totalGuests,
+          identityProof: normalizedIdentityProof,
           identityDocument: identityDocument || null,
           mainGuestIdentity: mainGuestIdentityUrl,
           guestsIdentity: Array.isArray(guestsIdentity) ? guestsIdentity : [],
@@ -444,6 +483,7 @@ exports.createBooking = async (data, user) => {
     session.endSession();
 
     const bookingData = bookingArr[0].toObject();
+    bookingData.identityProof = normalizedIdentityProof;
     bookingData.identityDocument = identityDocument || null;
     bookingData.mainGuestIdentity = mainGuestIdentityUrl;
     bookingData.guestsIdentity = guestsIdentity || [];
@@ -478,10 +518,17 @@ exports.getBookings = async (user) => {
     throw new Error("Branch not found");
   }
 
-  return Booking.find({
+  const bookings = await Booking.find({
     branchId: user.branchId,
     isActive: true,
-  }).sort({ createdAt: -1 });
+  })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  return bookings.map((booking) => ({
+    ...booking,
+    identityProof: normalizeIdentityProof(booking),
+  }));
 };
 
 exports.getBookingById = async (bookingId, user) => {
@@ -537,6 +584,7 @@ exports.updateBooking = async (bookingId, data, user) => {
       guestEmail,
       totalGuests,
       guests,
+      identityProof,
       identityDocument,
       mainGuestIdentity,
       guestsIdentity,
@@ -545,7 +593,12 @@ exports.updateBooking = async (bookingId, data, user) => {
       checkOutDate,
       checkOutTime,
     } = data;
-    const mainGuestIdentityUrl = mainGuestIdentity || identityDocument?.url || null;
+    const normalizedIdentityProof = normalizeIdentityProof({
+      identityProof,
+      identityDocument,
+      mainGuestIdentity,
+    });
+    const mainGuestIdentityUrl = normalizedIdentityProof?.url || null;
 
     if (!roomId || !guestName || !guestType || !checkInDate || !checkOutDate) {
       throw new Error("Required fields are missing");
@@ -579,6 +632,10 @@ exports.updateBooking = async (bookingId, data, user) => {
     booking.nights = nights;
     booking.totalAmount = roomCharges;
     booking.updatedBy = user.id || user.userId;
+
+    if (normalizedIdentityProof) {
+      booking.identityProof = normalizedIdentityProof;
+    }
 
     if (identityDocument) {
       booking.identityDocument = identityDocument;
