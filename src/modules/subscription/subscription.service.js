@@ -9,6 +9,16 @@ const SubscriptionPayment = require("./subscriptionPayment.model");
 const FIVE_DAYS_IN_MS = 5 * 24 * 60 * 60 * 1000;
 const TRIAL_DAYS = 14;
 const DASHBOARD_ALLOWED_STATUSES = new Set(["active", "trial"]);
+const PLAN_HIERARCHY = ["FREE", "BASIC", "PROFESSIONAL", "ENTERPRISE"];
+const PLAN_NAME_ALIASES = {
+  FREE: "FREE",
+  TRIAL: "FREE",
+  BASIC: "BASIC",
+  STARTER: "BASIC",
+  PROFESSIONAL: "PROFESSIONAL",
+  PRO: "PROFESSIONAL",
+  ENTERPRISE: "ENTERPRISE",
+};
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
@@ -83,6 +93,69 @@ const getPlanAmount = (plan, billingCycle) =>
 
 const isFreePlan = (plan, billingCycle = "monthly") =>
   getPlanAmount(plan, billingCycle) === 0;
+
+const normalizePlanHierarchyName = (name) =>
+  PLAN_NAME_ALIASES[String(name || "").trim().toUpperCase()] || null;
+
+const getPlanHierarchyIndex = (plan) => {
+  const normalizedName = normalizePlanHierarchyName(plan?.name || plan);
+
+  if (normalizedName) {
+    return PLAN_HIERARCHY.indexOf(normalizedName);
+  }
+
+  return -1;
+};
+
+const comparePlans = (currentPlan, selectedPlan) => {
+  const currentIndex = getPlanHierarchyIndex(currentPlan);
+  const selectedIndex = getPlanHierarchyIndex(selectedPlan);
+
+  if (currentIndex >= 0 && selectedIndex >= 0) {
+    return selectedIndex - currentIndex;
+  }
+
+  const currentMonthlyPrice = Number(currentPlan?.monthlyPrice || 0);
+  const selectedMonthlyPrice = Number(selectedPlan?.monthlyPrice || 0);
+
+  if (selectedMonthlyPrice !== currentMonthlyPrice) {
+    return selectedMonthlyPrice - currentMonthlyPrice;
+  }
+
+  const currentYearlyPrice = Number(currentPlan?.yearlyPrice || 0);
+  const selectedYearlyPrice = Number(selectedPlan?.yearlyPrice || 0);
+
+  if (selectedYearlyPrice !== currentYearlyPrice) {
+    return selectedYearlyPrice - currentYearlyPrice;
+  }
+
+  return String(selectedPlan?.name || "").localeCompare(
+    String(currentPlan?.name || ""),
+  );
+};
+
+const assertUpgradeOnlySelection = async ({
+  organizationId,
+  selectedPlan,
+  allowCurrentPlan = false,
+}) => {
+  const currentSubscription = await getOrganizationSubscriptionDoc(organizationId);
+  const currentPlan = currentSubscription?.planSnapshot;
+
+  if (!currentPlan?.name) {
+    return;
+  }
+
+  const comparison = comparePlans(currentPlan, selectedPlan);
+
+  if (comparison < 0) {
+    throw new Error("Downgrade not allowed. You can only upgrade your plan.");
+  }
+
+  if (!allowCurrentPlan && comparison === 0) {
+    throw new Error("This is already your current plan.");
+  }
+};
 
 const addBillingCycle = (startDate, billingCycle) => {
   const nextDate = new Date(startDate);
@@ -433,6 +506,11 @@ exports.assignPlanToOrganization = async ({
     throw new Error("Billing cycle must be monthly or yearly");
   }
 
+  await assertUpgradeOnlySelection({
+    organizationId,
+    selectedPlan: plan,
+  });
+
   const currentBranchCount = await getOrganizationBranchCount(organizationId);
 
   if (plan.branchLimit !== null && currentBranchCount > plan.branchLimit) {
@@ -666,6 +744,11 @@ exports.createRazorpayOrder = async (user, { planId, billingCycle }) => {
   if (!["monthly", "yearly"].includes(billingCycle)) {
     throw new Error("Billing cycle must be monthly or yearly");
   }
+
+  await assertUpgradeOnlySelection({
+    organizationId: user.organizationId,
+    selectedPlan: plan,
+  });
 
   const currentBranchCount = await getOrganizationBranchCount(
     user.organizationId,
