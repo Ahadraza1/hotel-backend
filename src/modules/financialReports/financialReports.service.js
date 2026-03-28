@@ -168,24 +168,35 @@ exports.getRecentPayments = async () => {
   const organizations = await Organization.find({
     organizationId: { $in: organizationIds },
   })
-    .select("organizationId name")
+    .select("organizationId name serviceTier")
     .lean();
 
   const organizationMap = new Map(
-    organizations.map((organization) => [organization.organizationId, organization.name]),
+    organizations.map((organization) => [
+      organization.organizationId,
+      {
+        name: organization.name,
+        tier: organization.serviceTier || null,
+      },
+    ]),
   );
 
-  return payments.map((payment) => ({
-    _id: String(payment._id),
-    organizationName: organizationMap.get(payment.organizationId) || payment.organizationId || "Unknown Organization",
-    amount: payment.amount || 0,
-    date: payment.paymentDate
-      ? new Date(payment.paymentDate).toLocaleDateString("en-US", {
-          year: "numeric",
-          month: "short",
-          day: "numeric",
-        })
-      : "-",
-    status: payment.status,
-  }));
+  return payments.map((payment) => {
+    const organization = organizationMap.get(payment.organizationId);
+
+    return {
+      _id: String(payment._id),
+      organizationName: organization?.name || payment.organizationId || "Unknown Organization",
+      tier: organization?.tier || "-",
+      amount: payment.amount || 0,
+      date: payment.paymentDate
+        ? new Date(payment.paymentDate).toLocaleDateString("en-US", {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          })
+        : "-",
+      status: payment.status,
+    };
+  });
 };

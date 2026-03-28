@@ -5,6 +5,10 @@ const User = require("../user/user.model");
 const RefreshToken = require("../auth/refreshToken.model");
 const Invoice = require("../invoice/invoice.model");
 const POSOrder = require("../pos/posOrder.model");
+const {
+  getActiveBranchIds,
+  buildBranchReferenceMatch,
+} = require("../../utils/workspaceScope");
 
 /*
   Create Organization
@@ -67,9 +71,15 @@ exports.getAllOrganizations = async (req, res) => {
     }
 
     const organizationIds = organizations.map((org) => org.organizationId);
+    const activeBranchIds = organizationIds.length
+      ? await getActiveBranchIds({
+          organizationId: { $in: organizationIds },
+        })
+      : [];
+    const branchIdMatch = buildBranchReferenceMatch(activeBranchIds);
 
     const [roomRevenueAgg, posRevenueAgg] = await Promise.all([
-      organizationIds.length
+      organizationIds.length && activeBranchIds.length
         ? Invoice.aggregate([
             {
               $match: {
@@ -77,6 +87,7 @@ exports.getAllOrganizations = async (req, res) => {
                 status: "PAID",
                 referenceType: "BOOKING",
                 organizationId: { $in: organizationIds },
+                branchId: branchIdMatch,
               },
             },
             {
@@ -87,13 +98,14 @@ exports.getAllOrganizations = async (req, res) => {
             },
           ])
         : [],
-      organizationIds.length
+      organizationIds.length && activeBranchIds.length
         ? POSOrder.aggregate([
             {
               $match: {
                 isActive: true,
                 paymentStatus: "PAID",
                 organizationId: { $in: organizationIds },
+                branchId: branchIdMatch,
               },
             },
             {
@@ -184,6 +196,8 @@ exports.getOrganizationById = async (req, res) => {
     }
 
     const organizationId = organization.organizationId;
+    const activeBranchIds = await getActiveBranchIds({ organizationId });
+    const branchIdMatch = buildBranchReferenceMatch(activeBranchIds);
 
     const [branchesCount, corporateAdmin, roomRevenueAgg, posRevenueAgg] =
       await Promise.all([
@@ -201,6 +215,7 @@ exports.getOrganizationById = async (req, res) => {
               status: "PAID",
               referenceType: "BOOKING",
               organizationId,
+              branchId: branchIdMatch,
             },
           },
           {
@@ -216,6 +231,7 @@ exports.getOrganizationById = async (req, res) => {
               isActive: true,
               paymentStatus: "PAID",
               organizationId,
+              branchId: branchIdMatch,
             },
           },
           {
@@ -292,28 +308,35 @@ exports.deleteOrganization = async (req, res) => {
 
     const orgId = organization.organizationId;
 
-    const users = await User.find({
-      organizationId: orgId,
-    });
-
-    const userIds = users.map((u) => u._id);
-
     await RefreshToken.deleteMany({
-      userId: { $in: userIds },
+      userId: {
+        $in: (
+          await User.find({
+            organizationId: orgId,
+          }).select("_id")
+        ).map((user) => user._id),
+      },
     });
 
-    await User.deleteMany({
-      organizationId: orgId,
-    });
+    await Branch.updateMany(
+      { organizationId: orgId },
+      {
+        $set: {
+          isDeleted: true,
+          deletedAt: new Date(),
+          isActive: false,
+        },
+      },
+    );
 
-    await Branch.deleteMany({
-      organizationId: orgId,
+    await Organization.findByIdAndUpdate(id, {
+      isDeleted: true,
+      deletedAt: new Date(),
+      isActive: false,
     });
-
-    await Organization.findByIdAndDelete(id);
 
     res.status(200).json({
-      message: "Organization and all related data deleted successfully",
+      message: "Organization deleted successfully",
     });
   } catch (error) {
     console.error("DELETE ORG ERROR:", error);
@@ -404,7 +427,7 @@ exports.blockOrganization = async (req, res) => {
     );
 
     const users = await User.find({
-      organizationId: updated._id,
+      organizationId: updated.organizationId,
     });
 
     const userIds = users.map((u) => u._id);

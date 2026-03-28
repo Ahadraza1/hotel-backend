@@ -4,7 +4,7 @@ const router = express.Router();
 const systemSettingsController = require("./systemSettings.controller");
 
 const requireAuth = require("../../middleware/requireAuth.middleware");
-const requirePermission = require("../../middleware/requirePermission.middleware");
+const requireSuperAdmin = require("../../middleware/requireSuperAdmin.middleware");
 
 /*
   Get System Settings
@@ -12,7 +12,7 @@ const requirePermission = require("../../middleware/requirePermission.middleware
 router.get(
   "/",
   requireAuth,
-  requirePermission("VIEW_ANALYTICS"), // you can change permission later
+  requireSuperAdmin,
   systemSettingsController.getSystemSettings
 );
 
@@ -22,7 +22,7 @@ router.get(
 router.put(
   "/",
   requireAuth,
-  requirePermission("VIEW_ANALYTICS"),
+  requireSuperAdmin,
   systemSettingsController.updateSystemSettings
 );
 

@@ -5,6 +5,30 @@ const Invoice = require("../invoice/invoice.model");
 const Branch = require("../branch/branch.model");
 const POSOrder = require("../pos/posOrder.model");
 const Organization = require("../organization/organization.model");
+const {
+  buildBranchReferenceMatch,
+  ensureActiveBranch,
+  getActiveBranchIds,
+  getActiveOrganizationIds,
+} = require("../../utils/workspaceScope");
+
+const getScopedBranchIdsForUser = async (user, branchId = null) => {
+  if (branchId) {
+    const branch = await ensureActiveBranch(branchId);
+    return branch ? [branch._id] : [];
+  }
+
+  if (user.role === "BRANCH_MANAGER") {
+    const branch = await ensureActiveBranch(user.branchId);
+    return branch ? [branch._id] : [];
+  }
+
+  if (user.role === "CORPORATE_ADMIN") {
+    return getActiveBranchIds({ organizationId: user.organizationId });
+  }
+
+  return getActiveBranchIds();
+};
 
 /*
   Role-Based Filter Builder
@@ -161,6 +185,25 @@ exports.getCorporateDashboard = async (user) => {
       throw error;
     }
 
+    const activeOrganizationIds =
+      user.role === "CORPORATE_ADMIN"
+        ? await getActiveOrganizationIds({ organizationId: user.organizationId })
+        : await getActiveOrganizationIds();
+    const activeBranchIds = await getScopedBranchIdsForUser(user);
+    const activeBranchMatch = buildBranchReferenceMatch(activeBranchIds);
+
+    if (!activeOrganizationIds.length || !activeBranchIds.length) {
+      return {
+        totalRevenue: 0,
+        totalOutstanding: 0,
+        branches: [],
+        bestBranch: null,
+        worstBranch: null,
+        bestPerforming: null,
+        lowestPerforming: null
+      };
+    }
+
     /*
       1. ROOM REVENUE (INVOICE)
     */
@@ -170,7 +213,8 @@ exports.getCorporateDashboard = async (user) => {
           isActive: true,
           status: "PAID",
           referenceType: "BOOKING",
-          ...(user.role === "CORPORATE_ADMIN" ? { organizationId: user.organizationId } : {})
+          organizationId: { $in: activeOrganizationIds },
+          branchId: activeBranchMatch,
         }
       },
       {
@@ -193,7 +237,8 @@ exports.getCorporateDashboard = async (user) => {
         $match: {
           isActive: true,
           paymentStatus: "PAID",
-          ...(user.role === "CORPORATE_ADMIN" ? { organizationId: user.organizationId } : {})
+          organizationId: { $in: activeOrganizationIds },
+          branchId: activeBranchMatch,
         }
       },
       {
@@ -259,11 +304,11 @@ exports.getCorporateDashboard = async (user) => {
       const lowestOrg = orgTotals[orgTotals.length - 1];
 
       const organizations = await Organization.find({
-        _id: { $in: orgTotals.map(o => o.organizationId) }
+        organizationId: { $in: orgTotals.map((o) => o.organizationId) }
       });
 
-      const bestData = organizations.find(o => o._id.toString() === bestOrg.organizationId);
-      const lowestData = organizations.find(o => o._id.toString() === lowestOrg.organizationId);
+      const bestData = organizations.find(o => o.organizationId === bestOrg.organizationId);
+      const lowestData = organizations.find(o => o.organizationId === lowestOrg.organizationId);
 
       if (bestData) {
         bestPerforming = {
@@ -283,12 +328,10 @@ exports.getCorporateDashboard = async (user) => {
     /*
       6. PREPARE BRANCHES LIST (Recalculate logic for dashboard)
     */
-    const branchMatch = { isActive: true };
-    if (user.role === "CORPORATE_ADMIN") {
-      branchMatch.organizationId = user.organizationId;
-    }
-
-    const branchesRaw = await Branch.find(branchMatch).select("_id name totalRooms");
+    const branchesRaw = await Branch.find({
+      _id: { $in: activeBranchIds },
+      isActive: true,
+    }).select("_id name totalRooms");
     
     const branches = branchesRaw.map(b => {
       let bRevenue = 0;
@@ -370,7 +413,6 @@ async function getAvailableRevenueYears(branchId) {
 }
 
 exports.getBranchDashboard = async (user, branchId) => {
-  const branchObjectId = new mongoose.Types.ObjectId(branchId);
   if (!branchId) {
     const error = new Error("Branch context required");
     error.statusCode = 400;
@@ -385,6 +427,16 @@ exports.getBranchDashboard = async (user, branchId) => {
     error.statusCode = 403;
     throw error;
   }
+
+  const activeBranch = await ensureActiveBranch(branchId);
+
+  if (!activeBranch) {
+    const error = new Error("Branch not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const branchObjectId = new mongoose.Types.ObjectId(activeBranch._id);
 
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
@@ -645,222 +697,305 @@ exports.getBranchDashboard = async (user, branchId) => {
   ===========================
 */
 
-/*
-  Revenue By Branch (Chart Data)
-*/
-exports.getRevenueByBranch = async (user, view, year, month) => {
-  if (user.role !== "SUPER_ADMIN" && user.role !== "CORPORATE_ADMIN") {
-    const error = new Error("Access denied");
-    error.statusCode = 403;
-    throw error;
-  }
+const ANALYTICS_MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-  const match = {
-    isActive: true
-  };
+const formatHourLabel = (hour) => {
+  const suffix = hour >= 12 ? "PM" : "AM";
+  const normalizedHour = hour % 12 === 0 ? 12 : hour % 12;
+  return `${normalizedHour} ${suffix}`;
+};
 
-  if (user.role === "CORPORATE_ADMIN") {
-    match.organizationId = user.organizationId;
-  }
+const formatTwoHourRangeLabel = (startHour) => {
+  const endHour = startHour + 2;
+  const startLabel = formatHourLabel(startHour);
+  const endLabel = formatHourLabel(endHour);
+  return `${startLabel} - ${endLabel}`;
+};
 
-  let start, end;
-
-  if (view === "today") {
-    start = new Date();
-    start.setHours(0, 0, 0, 0);
-
-    end = new Date();
-    end.setHours(23, 59, 59, 999);
-  } else if (view === "monthly") {
-    let parsedMonth = parseInt(month);
-    const selectedMonth = isNaN(parsedMonth) ? new Date().getMonth() : parsedMonth;
-    const selectedYear = parseInt(year) || new Date().getFullYear();
-
-    start = new Date(selectedYear, selectedMonth, 1);
-    end = new Date(selectedYear, selectedMonth + 1, 0, 23, 59, 59);
-  } else if (view === "yearly") {
-    const selectedYear = parseInt(year) || new Date().getFullYear();
-
-    start = new Date(selectedYear, 0, 1);
-    end = new Date(selectedYear, 11, 31, 23, 59, 59);
-  }
-
-  // Room Revenue
-  const roomRevenue = await Invoice.aggregate([
-    {
-      $match: {
-        ...match,
-        referenceType: "BOOKING",
-        status: "PAID",
-        createdAt: { $gte: start, $lte: end }
-      }
-    },
-    {
-      $group: {
-        _id: "$branchId",
-        revenue: { $sum: "$paidAmount" }
-      }
-    }
-  ]);
-
-  // POS Revenue
-  const posRevenue = await POSOrder.aggregate([
-    {
-      $match: {
-        ...match,
-        paymentStatus: "PAID",
-        createdAt: { $gte: start, $lte: end }
-      }
-    },
-    {
-      $group: {
-        _id: "$branchId",
-        revenue: { $sum: "$subTotal" }
-      }
-    }
-  ]);
-
-  const revenueMap = {};
-
-  roomRevenue.forEach(item => {
-    const bId = item._id.toString();
-    revenueMap[bId] = (revenueMap[bId] || 0) + item.revenue;
+const getDatePartsInTimeZone = (date, timeZone) => {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
   });
 
-  posRevenue.forEach(item => {
-    const bId = item._id.toString();
-    revenueMap[bId] = (revenueMap[bId] || 0) + item.revenue;
-  });
-
-  const branchIds = Object.keys(revenueMap);
-
-  const branches = await Branch.find({
-    _id: { $in: branchIds }
-  });
-
-  const result = branches.map(branch => ({
-    branchName: branch.name,
-    revenue: revenueMap[branch._id.toString()] || 0
-  }));
-
-  result.sort((a, b) => b.revenue - a.revenue);
-
-  let comparison = null;
-
-  if (view === "monthly") {
-    let parsedMonth = parseInt(month);
-    const selectedMonth = isNaN(parsedMonth) ? new Date().getMonth() : parsedMonth;
-    const selectedYear = parseInt(year) || new Date().getFullYear();
-
-    const prevStart = new Date(selectedYear, selectedMonth - 1, 1);
-    const prevEnd = new Date(selectedYear, selectedMonth, 0, 23, 59, 59);
-
-    const prevRoomRevenue = await Invoice.aggregate([
-      {
-        $match: {
-          ...match,
-          referenceType: "BOOKING",
-          status: "PAID",
-          createdAt: { $gte: prevStart, $lte: prevEnd }
-        }
-      },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: "$paidAmount" }
-        }
-      }
-    ]);
-
-    const prevPosRevenue = await POSOrder.aggregate([
-      {
-        $match: {
-          ...match,
-          paymentStatus: "PAID",
-          createdAt: { $gte: prevStart, $lte: prevEnd }
-        }
-      },
-      {
-        $group: {
-          _id: null,
-          total: { $sum: "$subTotal" }
-        }
-      }
-    ]);
-
-    const current = result.reduce((sum, item) => sum + item.revenue, 0);
-    const previous = (prevRoomRevenue[0]?.total || 0) + (prevPosRevenue[0]?.total || 0);
-
-    let growth = 0;
-    if (previous > 0) {
-      growth = ((current - previous) / previous) * 100;
-    } else if (current > 0) {
-      growth = 100; // 100% growth from 0
-    }
-
-    comparison = {
-      current,
-      previous,
-      growth
-    };
-  }
+  const parts = formatter.formatToParts(date);
+  const readPart = (type) => parts.find((part) => part.type === type)?.value || "00";
 
   return {
-    chartData: result,
-    comparison
+    year: Number(readPart("year")),
+    month: Number(readPart("month")),
+    day: Number(readPart("day")),
+    hour: Number(readPart("hour")),
+    minute: Number(readPart("minute")),
+    second: Number(readPart("second")),
   };
 };
 
-/*
-  Occupancy Trend (Branch-wise Monthly)
-  Occupancy (%) = booked rooms / total active rooms * 100
-*/
-exports.getOccupancyTrend = async (user, year) => {
-  if (user.role !== "SUPER_ADMIN" && user.role !== "CORPORATE_ADMIN") {
-    const error = new Error("Access denied");
-    error.statusCode = 403;
-    throw error;
+const getLocalDateKey = (date, timeZone) => {
+  const parts = getDatePartsInTimeZone(date, timeZone);
+  return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+};
+
+const getLocalHour = (date, timeZone) => getDatePartsInTimeZone(date, timeZone).hour;
+
+const isSameLocalDate = (leftDate, rightDate, timeZone) =>
+  getLocalDateKey(leftDate, timeZone) === getLocalDateKey(rightDate, timeZone);
+
+const getTwoHourBucketStart = (hour) => Math.floor(hour / 2) * 2;
+
+const resolveAnalyticsTimeZone = async (user, branches = [], activeOrganizationIds = []) => {
+  if (user?.branchId) {
+    const branch = await ensureActiveBranch(user.branchId);
+    if (branch?.timezone) {
+      return branch.timezone;
+    }
   }
 
-  const branchFilter = { isActive: true };
-  if (user.role === "CORPORATE_ADMIN") {
-    branchFilter.organizationId = user.organizationId;
+  if (user?.role === "CORPORATE_ADMIN" && user.organizationId) {
+    const organization = await Organization.findOne({ organizationId: user.organizationId })
+      .select("timezone")
+      .lean();
+
+    if (organization?.timezone) {
+      return organization.timezone;
+    }
   }
 
-  const selectedYear = parseInt(year, 10) || new Date().getFullYear();
-  const monthWindows = [];
+  const uniqueBranchTimezones = [...new Set(branches.map((branch) => branch.timezone).filter(Boolean))];
+  if (uniqueBranchTimezones.length === 1) {
+    return uniqueBranchTimezones[0];
+  }
 
-  for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
-    const start = new Date(selectedYear, monthIndex, 1);
-    const end = new Date(selectedYear, monthIndex + 1, 1);
+  if (activeOrganizationIds.length === 1) {
+    const organization = await Organization.findOne({ organizationId: activeOrganizationIds[0] })
+      .select("timezone")
+      .lean();
 
-    monthWindows.push({
-      key: `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}`,
-      label: start.toLocaleString("en-US", { month: "short" }),
+    if (organization?.timezone) {
+      return organization.timezone;
+    }
+  }
+
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+};
+
+const getAnalyticsBuckets = (view, year, month) => {
+  const normalizedView = view === "today" || view === "yearly" ? view : "monthly";
+  const now = new Date();
+  const selectedYear = parseInt(year, 10) || now.getFullYear();
+  const parsedMonth = parseInt(month, 10);
+  const selectedMonth = Number.isNaN(parsedMonth) ? now.getMonth() : parsedMonth;
+
+  if (normalizedView === "today") {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const buckets = Array.from({ length: 12 }, (_, index) => {
+      const startHour = index * 2;
+      const start = new Date(startOfDay);
+      start.setHours(startHour, 0, 0, 0);
+
+      const end = new Date(start);
+      end.setHours(startHour + 2, 0, 0, 0);
+
+      return {
+        key: `${start.toISOString().slice(0, 13)}:00`,
+        label: formatTwoHourRangeLabel(startHour),
+        start,
+        end,
+      };
+    });
+
+    return {
+      view: normalizedView,
+      year: selectedYear,
+      month: selectedMonth,
+      buckets,
+      rangeStart: buckets[0].start,
+      rangeEnd: buckets[buckets.length - 1].end,
+    };
+  }
+
+  if (normalizedView === "monthly") {
+    const monthStart = new Date(selectedYear, selectedMonth, 1);
+    const nextMonthStart = new Date(selectedYear, selectedMonth + 1, 1);
+
+    const buckets = [
+      { startDay: 1, endDay: 8, label: "Week 1" },
+      { startDay: 8, endDay: 15, label: "Week 2" },
+      { startDay: 15, endDay: 22, label: "Week 3" },
+      { startDay: 22, endDay: null, label: "Week 4" },
+    ].map((bucket, index) => {
+      const start = new Date(selectedYear, selectedMonth, bucket.startDay);
+      const end = bucket.endDay
+        ? new Date(selectedYear, selectedMonth, bucket.endDay)
+        : nextMonthStart;
+
+      return {
+        key: `${selectedYear}-${String(selectedMonth + 1).padStart(2, "0")}-W${index + 1}`,
+        label: bucket.label,
+        start,
+        end,
+      };
+    });
+
+    return {
+      view: normalizedView,
+      year: selectedYear,
+      month: selectedMonth,
+      buckets,
+      rangeStart: monthStart,
+      rangeEnd: nextMonthStart,
+    };
+  }
+
+  const buckets = ANALYTICS_MONTH_LABELS.map((label, index) => {
+    const start = new Date(selectedYear, index, 1);
+    const end = new Date(selectedYear, index + 1, 1);
+
+    return {
+      key: `${selectedYear}-${String(index + 1).padStart(2, "0")}`,
+      label,
       start,
       end,
-    });
+    };
+  });
+
+  return {
+    view: normalizedView,
+    year: selectedYear,
+    month: selectedMonth,
+    buckets,
+    rangeStart: buckets[0].start,
+    rangeEnd: buckets[buckets.length - 1].end,
+  };
+};
+
+const buildEmptyChartData = (buckets) =>
+  buckets.map((bucket) => ({
+    label: bucket.label,
+    bucketKey: bucket.key,
+  }));
+
+const getBucketKeyForDate = (date, buckets) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
   }
 
-  const rangeStart = monthWindows[0].start;
-  const rangeEnd = monthWindows[monthWindows.length - 1].end;
+  const bucket = buckets.find((item) => date >= item.start && date < item.end);
+  return bucket?.key || null;
+};
 
-  const branches = await Branch.find(branchFilter)
-    .select("_id name organizationId")
+const mergeDateAndTime = (dateValue, timeValue, fallbackTime) => {
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  const [hours, minutes] = String(timeValue || fallbackTime)
+    .split(":")
+    .map((value) => parseInt(value, 10));
+
+  date.setHours(Number.isNaN(hours) ? 0 : hours, Number.isNaN(minutes) ? 0 : minutes, 0, 0);
+  return date;
+};
+
+const buildComparison = (current, previous) => {
+  let growth = 0;
+
+  if (previous > 0) {
+    growth = ((current - previous) / previous) * 100;
+  } else if (current > 0) {
+    growth = 100;
+  }
+
+  return {
+    current,
+    previous,
+    growth,
+  };
+};
+
+const getAnalyticsScope = async (user, mode = "branch") => {
+  const chartMode = mode === "organization" ? "organization" : "branch";
+  const activeBranchIds = await getScopedBranchIdsForUser(user);
+  const activeOrganizationIds =
+    user.role === "CORPORATE_ADMIN"
+      ? await getActiveOrganizationIds({ organizationId: user.organizationId })
+      : await getActiveOrganizationIds();
+
+  if (!activeBranchIds.length || !activeOrganizationIds.length) {
+    return {
+      mode: chartMode,
+      branches: [],
+      branchIds: [],
+      activeOrganizationIds,
+      series: [],
+    };
+  }
+
+  const branches = await Branch.find({
+    _id: { $in: activeBranchIds },
+    organizationId: { $in: activeOrganizationIds },
+    isActive: true,
+  })
+    .select("_id name organizationId timezone")
     .sort({ name: 1 })
     .lean();
 
   if (!branches.length) {
     return {
+      mode: chartMode,
       branches: [],
-      chartData: monthWindows.map((month) => ({
-        month: month.label,
-        monthKey: month.key,
-      })),
+      branchIds: [],
+      activeOrganizationIds,
+      series: [],
     };
   }
 
-  const branchIds = branches.map((branch) => branch._id);
+  let series;
+
+  if (chartMode === "organization") {
+    const organizations = await Organization.find({
+      organizationId: { $in: activeOrganizationIds },
+      isActive: true,
+    })
+      .select("organizationId name")
+      .sort({ name: 1 })
+      .lean();
+
+    series = organizations.map((organization) => ({
+      key: organization.organizationId,
+      name: organization.name,
+      organizationId: organization.organizationId,
+    }));
+  } else {
+    series = branches.map((branch) => ({
+      key: branch._id.toString(),
+      name: branch.name,
+      organizationId: branch.organizationId,
+    }));
+  }
+
+  return {
+    mode: chartMode,
+    branches,
+    branchIds: branches.map((branch) => branch._id),
+    activeOrganizationIds,
+    series,
+  };
+};
+
+const getActiveRoomCountsByBranch = async (branchIds = []) => {
+  if (!branchIds.length) {
+    return new Map();
+  }
 
   const roomCounts = await Room.aggregate([
     {
@@ -877,168 +1012,466 @@ exports.getOccupancyTrend = async (user, year) => {
     },
   ]);
 
-  const totalRoomsByBranch = new Map(
+  return new Map(
     roomCounts.map((item) => [item._id.toString(), item.totalRooms || 0]),
   );
+};
 
-  const bookings = await Booking.find({
-    isActive: true,
-    status: { $ne: "CANCELLED" },
-    branchId: { $in: branchIds },
-    checkInDate: { $lt: rangeEnd },
-    checkOutDate: { $gt: rangeStart },
-  })
-    .select("branchId roomId checkInDate checkOutDate")
-    .lean();
+const buildMetricChartData = ({
+  buckets,
+  series,
+  branches,
+  mode,
+  valueMap,
+  totalRoomsByBranch = new Map(),
+  metricType = "sum",
+}) => {
+  const branchesByOrganization = new Map();
 
-  const bookedRoomsByBranchAndMonth = new Map();
+  branches.forEach((branch) => {
+    const organizationId = branch.organizationId;
 
-  bookings.forEach((booking) => {
-    const branchId = booking.branchId?.toString();
-    const roomId = booking.roomId?.toString();
-
-    if (!branchId || !roomId) {
-      return;
+    if (!branchesByOrganization.has(organizationId)) {
+      branchesByOrganization.set(organizationId, []);
     }
 
-    monthWindows.forEach((month) => {
-      if (booking.checkInDate < month.end && booking.checkOutDate > month.start) {
-        const compositeKey = `${branchId}__${month.key}`;
-
-        if (!bookedRoomsByBranchAndMonth.has(compositeKey)) {
-          bookedRoomsByBranchAndMonth.set(compositeKey, new Set());
-        }
-
-        bookedRoomsByBranchAndMonth.get(compositeKey).add(roomId);
-      }
-    });
+    branchesByOrganization.get(organizationId).push(branch);
   });
 
-  const branchSeries = branches.map((branch) => ({
-    key: branch._id.toString(),
-    name: branch.name,
-    organizationId: branch.organizationId,
-  }));
-
-  const chartData = monthWindows.map((month) => {
+  return buckets.map((bucket) => {
     const point = {
-      month: month.label,
-      monthKey: month.key,
+      label: bucket.label,
+      bucketKey: bucket.key,
     };
 
-    branchSeries.forEach((branch) => {
-      const totalRooms = totalRoomsByBranch.get(branch.key) || 0;
-      const bookedRooms =
-        bookedRoomsByBranchAndMonth.get(`${branch.key}__${month.key}`)?.size || 0;
+    series.forEach((entity) => {
+      if (mode === "organization") {
+        const organizationBranches = branchesByOrganization.get(entity.key) || [];
 
-      point[branch.key] =
-        totalRooms > 0 ? Number(((bookedRooms / totalRooms) * 100).toFixed(2)) : 0;
+        if (metricType === "occupancy") {
+          let occupiedRooms = 0;
+          let totalRooms = 0;
+
+          organizationBranches.forEach((branch) => {
+            const branchKey = branch._id.toString();
+            occupiedRooms += valueMap.get(`${branchKey}__${bucket.key}`) || 0;
+            totalRooms += totalRoomsByBranch.get(branchKey) || 0;
+          });
+
+          point[entity.key] =
+            totalRooms > 0 ? Number(((occupiedRooms / totalRooms) * 100).toFixed(2)) : 0;
+          return;
+        }
+
+        if (metricType === "revpar") {
+          let revenue = 0;
+          let totalRooms = 0;
+
+          organizationBranches.forEach((branch) => {
+            const branchKey = branch._id.toString();
+            revenue += valueMap.get(`${branchKey}__${bucket.key}`) || 0;
+            totalRooms += totalRoomsByBranch.get(branchKey) || 0;
+          });
+
+          point[entity.key] =
+            totalRooms > 0 ? Number((revenue / totalRooms).toFixed(2)) : 0;
+          return;
+        }
+
+        let totalValue = 0;
+        organizationBranches.forEach((branch) => {
+          totalValue += valueMap.get(`${branch._id.toString()}__${bucket.key}`) || 0;
+        });
+
+        point[entity.key] = totalValue;
+        return;
+      }
+
+      const rawValue = valueMap.get(`${entity.key}__${bucket.key}`) || 0;
+
+      if (metricType === "occupancy") {
+        const totalRooms = totalRoomsByBranch.get(entity.key) || 0;
+        point[entity.key] =
+          totalRooms > 0 ? Number(((rawValue / totalRooms) * 100).toFixed(2)) : 0;
+        return;
+      }
+
+      if (metricType === "revpar") {
+        const totalRooms = totalRoomsByBranch.get(entity.key) || 0;
+        point[entity.key] =
+          totalRooms > 0 ? Number((rawValue / totalRooms).toFixed(2)) : 0;
+        return;
+      }
+
+      point[entity.key] = rawValue;
     });
 
     return point;
   });
-
-    return {
-      branches: branchSeries,
-      year: selectedYear,
-      chartData,
-    };
 };
 
 /*
-  RevPAR Trend (Branch-wise Monthly)
-  RevPAR = Total Room Revenue / Total Available Rooms
+  Revenue By Branch (Chart Data)
 */
-exports.getRevPARTrend = async (user, year) => {
+exports.getRevenueByBranch = async (user, view, year, month, mode = "branch") => {
   if (user.role !== "SUPER_ADMIN" && user.role !== "CORPORATE_ADMIN") {
     const error = new Error("Access denied");
     error.statusCode = 403;
     throw error;
   }
 
-  const branchFilter = { isActive: true };
-  if (user.role === "CORPORATE_ADMIN") {
-    branchFilter.organizationId = user.organizationId;
+  const scope = await getAnalyticsScope(user, mode);
+  const bucketMeta = getAnalyticsBuckets(view, year, month);
+  const analyticsTimeZone = await resolveAnalyticsTimeZone(
+    user,
+    scope.branches,
+    scope.activeOrganizationIds,
+  );
+
+  if (!scope.series.length) {
+    return {
+      series: [],
+      year: bucketMeta.year,
+      month: bucketMeta.month,
+      view: bucketMeta.view,
+      chartData: buildEmptyChartData(bucketMeta.buckets),
+      comparison: null,
+    };
   }
 
-  const selectedYear = parseInt(year, 10) || new Date().getFullYear();
-  const startOfYear = new Date(selectedYear, 0, 1);
-  const endOfYear = new Date(selectedYear, 11, 31, 23, 59, 59);
-
-  const branches = await Branch.find(branchFilter)
-    .select("_id name organizationId totalRooms")
-    .sort({ name: 1 })
+  const activeBranchMatch = buildBranchReferenceMatch(scope.branchIds);
+  const todayFetchStart = new Date(Date.now() - 36 * 60 * 60 * 1000);
+  const roomRevenueDocs = await Invoice.find({
+    isActive: true,
+    referenceType: "BOOKING",
+    status: "PAID",
+    organizationId: { $in: scope.activeOrganizationIds },
+    branchId: activeBranchMatch,
+    createdAt: {
+      $gte: bucketMeta.view === "today" ? todayFetchStart : bucketMeta.rangeStart,
+      $lt: bucketMeta.rangeEnd,
+    },
+  })
+    .select("branchId organizationId createdAt paidAmount")
     .lean();
 
-  if (!branches.length) {
-    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const posRevenueDocs = await POSOrder.find({
+    isActive: true,
+    paymentStatus: "PAID",
+    organizationId: { $in: scope.activeOrganizationIds },
+    branchId: activeBranchMatch,
+    createdAt: {
+      $gte: bucketMeta.view === "today" ? todayFetchStart : bucketMeta.rangeStart,
+      $lt: bucketMeta.rangeEnd,
+    },
+  })
+    .select("branchId organizationId createdAt subTotal")
+    .lean();
+
+  const revenueMap = new Map();
+  const todayReferenceDate = new Date();
+
+  [...roomRevenueDocs, ...posRevenueDocs].forEach((doc) => {
+    const branchId = doc.branchId?.toString?.() || doc.branchId;
+    let bucketKey = null;
+
+    if (bucketMeta.view === "today") {
+      if (!isSameLocalDate(doc.createdAt, todayReferenceDate, analyticsTimeZone)) {
+        return;
+      }
+
+      bucketKey = bucketMeta.buckets.find(
+        (bucket) => bucket.start.getHours() === getTwoHourBucketStart(getLocalHour(doc.createdAt, analyticsTimeZone)),
+      )?.key || null;
+    } else {
+      bucketKey = getBucketKeyForDate(doc.createdAt, bucketMeta.buckets);
+    }
+
+    if (!branchId || !bucketKey) {
+      return;
+    }
+
+    const compositeKey = `${branchId}__${bucketKey}`;
+    const amount = doc.paidAmount || doc.subTotal || 0;
+    revenueMap.set(compositeKey, (revenueMap.get(compositeKey) || 0) + amount);
+  });
+
+  const chartData = buildMetricChartData({
+    buckets: bucketMeta.buckets,
+    series: scope.series,
+    branches: scope.branches,
+    mode: scope.mode,
+    valueMap: revenueMap,
+    metricType: "sum",
+  });
+
+  let comparison = null;
+
+  if (bucketMeta.view === "monthly") {
+    const currentStart = new Date(bucketMeta.year, bucketMeta.month, 1);
+    const currentEnd = new Date(bucketMeta.year, bucketMeta.month + 1, 1);
+    const previousStart = new Date(bucketMeta.year, bucketMeta.month - 1, 1);
+
+    const [previousRoomAgg, previousPosAgg, currentRoomAgg, currentPosAgg] = await Promise.all([
+      Invoice.aggregate([
+        {
+          $match: {
+            isActive: true,
+            referenceType: "BOOKING",
+            status: "PAID",
+            organizationId: { $in: scope.activeOrganizationIds },
+            branchId: activeBranchMatch,
+            createdAt: { $gte: previousStart, $lt: currentStart },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: "$paidAmount" },
+          },
+        },
+      ]),
+      POSOrder.aggregate([
+        {
+          $match: {
+            isActive: true,
+            paymentStatus: "PAID",
+            organizationId: { $in: scope.activeOrganizationIds },
+            branchId: activeBranchMatch,
+            createdAt: { $gte: previousStart, $lt: currentStart },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: "$subTotal" },
+          },
+        },
+      ]),
+      Invoice.aggregate([
+        {
+          $match: {
+            isActive: true,
+            referenceType: "BOOKING",
+            status: "PAID",
+            organizationId: { $in: scope.activeOrganizationIds },
+            branchId: activeBranchMatch,
+            createdAt: { $gte: currentStart, $lt: currentEnd },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: "$paidAmount" },
+          },
+        },
+      ]),
+      POSOrder.aggregate([
+        {
+          $match: {
+            isActive: true,
+            paymentStatus: "PAID",
+            organizationId: { $in: scope.activeOrganizationIds },
+            branchId: activeBranchMatch,
+            createdAt: { $gte: currentStart, $lt: currentEnd },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: "$subTotal" },
+          },
+        },
+      ]),
+    ]);
+
+    const currentTotal = (currentRoomAgg[0]?.total || 0) + (currentPosAgg[0]?.total || 0);
+    const previousTotal = (previousRoomAgg[0]?.total || 0) + (previousPosAgg[0]?.total || 0);
+    comparison = buildComparison(currentTotal, previousTotal);
+  }
+
+  return {
+    series: scope.series,
+    year: bucketMeta.year,
+    month: bucketMeta.month,
+    view: bucketMeta.view,
+    chartData,
+    comparison,
+  };
+};
+
+/*
+  Occupancy Trend
+*/
+exports.getOccupancyTrend = async (user, view, year, month, mode = "branch") => {
+  if (user.role !== "SUPER_ADMIN" && user.role !== "CORPORATE_ADMIN") {
+    const error = new Error("Access denied");
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const scope = await getAnalyticsScope(user, mode);
+  const bucketMeta = getAnalyticsBuckets(view, year, month);
+
+  if (!scope.series.length) {
     return {
+      series: [],
       branches: [],
-      chartData: months.map((month) => ({
-        month,
-        monthKey: `${selectedYear}-${String(months.indexOf(month) + 1).padStart(2, "0")}`,
-      })),
+      year: bucketMeta.year,
+      month: bucketMeta.month,
+      view: bucketMeta.view,
+      chartData: buildEmptyChartData(bucketMeta.buckets),
     };
   }
 
-  const branchIds = branches.map((branch) => branch._id);
+  const totalRoomsByBranch = await getActiveRoomCountsByBranch(scope.branchIds);
+  const bookings = await Booking.find({
+    isActive: true,
+    status: { $ne: "CANCELLED" },
+    branchId: { $in: scope.branchIds },
+    checkInDate: { $lt: bucketMeta.rangeEnd },
+    checkOutDate: { $gte: bucketMeta.rangeStart },
+  })
+    .select("branchId roomId checkInDate checkOutDate checkInTime checkOutTime")
+    .lean();
 
-  // Group Revenue by Branch and Month
-  const revenueTrend = await Invoice.aggregate([
-    {
-      $match: {
-        isActive: true,
-        referenceType: "BOOKING",
-        branchId: { $in: branchIds },
-        createdAt: { $gte: startOfYear, $lte: endOfYear }
-      }
-    },
-    {
-      $group: {
-        _id: {
-          branchId: "$branchId",
-          month: { $month: "$createdAt" }
-        },
-        revenue: { $sum: "$paidAmount" }
-      }
+  const occupiedRoomCountMap = new Map();
+
+  bookings.forEach((booking) => {
+    const branchId = booking.branchId?.toString?.() || booking.branchId;
+    const roomId = booking.roomId?.toString?.() || booking.roomId;
+    const bookingStart = mergeDateAndTime(booking.checkInDate, booking.checkInTime, "00:00");
+    const bookingEnd = mergeDateAndTime(booking.checkOutDate, booking.checkOutTime, "23:59");
+
+    if (!branchId || !roomId || !bookingStart || !bookingEnd) {
+      return;
     }
-  ]);
 
-  const revenueMap = new Map();
-  revenueTrend.forEach(item => {
-    revenueMap.set(`${item._id.branchId}__${item._id.month}`, item.revenue);
+    bucketMeta.buckets.forEach((bucket) => {
+      if (bookingStart < bucket.end && bookingEnd > bucket.start) {
+        const compositeKey = `${branchId}__${bucket.key}`;
+
+        if (!occupiedRoomCountMap.has(compositeKey)) {
+          occupiedRoomCountMap.set(compositeKey, new Set());
+        }
+
+        occupiedRoomCountMap.get(compositeKey).add(roomId);
+      }
+    });
   });
 
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  
-  const branchSeries = branches.map((branch) => ({
-    key: branch._id.toString(),
-    name: branch.name,
-    organizationId: branch.organizationId,
-  }));
+  const occupiedCountMap = new Map();
+  occupiedRoomCountMap.forEach((roomSet, key) => {
+    occupiedCountMap.set(key, roomSet.size);
+  });
 
-  const chartData = months.map((monthLabel, index) => {
-    const monthNumber = index + 1;
-    const point = {
-      month: monthLabel,
-      monthKey: `${selectedYear}-${String(monthNumber).padStart(2, "0")}`,
-    };
-
-    branchSeries.forEach((branch) => {
-      // Find branch in the original branches list to get totalRooms
-      const branchInfo = branches.find(b => b._id.toString() === branch.key);
-      const totalRooms = branchInfo?.totalRooms || 0;
-      const revenue = revenueMap.get(`${branch.key}__${monthNumber}`) || 0;
-
-      point[branch.key] = totalRooms > 0 ? Number((revenue / totalRooms).toFixed(2)) : 0;
-    });
-
-    return point;
+  const chartData = buildMetricChartData({
+    buckets: bucketMeta.buckets,
+    series: scope.series,
+    branches: scope.branches,
+    mode: scope.mode,
+    valueMap: occupiedCountMap,
+    totalRoomsByBranch,
+    metricType: "occupancy",
   });
 
   return {
-    branches: branchSeries,
-    year: selectedYear,
+    series: scope.series,
+    branches: scope.series,
+    year: bucketMeta.year,
+    month: bucketMeta.month,
+    view: bucketMeta.view,
+    chartData,
+  };
+};
+
+/*
+  RevPAR Trend
+*/
+exports.getRevPARTrend = async (user, view, year, month, mode = "branch") => {
+  if (user.role !== "SUPER_ADMIN" && user.role !== "CORPORATE_ADMIN") {
+    const error = new Error("Access denied");
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const scope = await getAnalyticsScope(user, mode);
+  const bucketMeta = getAnalyticsBuckets(view, year, month);
+  const analyticsTimeZone = await resolveAnalyticsTimeZone(
+    user,
+    scope.branches,
+    scope.activeOrganizationIds,
+  );
+
+  if (!scope.series.length) {
+    return {
+      series: [],
+      branches: [],
+      year: bucketMeta.year,
+      month: bucketMeta.month,
+      view: bucketMeta.view,
+      chartData: buildEmptyChartData(bucketMeta.buckets),
+    };
+  }
+
+  const totalRoomsByBranch = await getActiveRoomCountsByBranch(scope.branchIds);
+  const todayFetchStart = new Date(Date.now() - 36 * 60 * 60 * 1000);
+  const revenueDocs = await Invoice.find({
+    isActive: true,
+    referenceType: "BOOKING",
+    organizationId: { $in: scope.activeOrganizationIds },
+    branchId: { $in: scope.branchIds },
+    createdAt: {
+      $gte: bucketMeta.view === "today" ? todayFetchStart : bucketMeta.rangeStart,
+      $lt: bucketMeta.rangeEnd,
+    },
+  })
+    .select("branchId createdAt paidAmount")
+    .lean();
+
+  const revenueMap = new Map();
+  const todayReferenceDate = new Date();
+
+  revenueDocs.forEach((doc) => {
+    const branchId = doc.branchId?.toString?.() || doc.branchId;
+    let bucketKey = null;
+
+    if (bucketMeta.view === "today") {
+      if (!isSameLocalDate(doc.createdAt, todayReferenceDate, analyticsTimeZone)) {
+        return;
+      }
+
+      bucketKey = bucketMeta.buckets.find(
+        (bucket) => bucket.start.getHours() === getTwoHourBucketStart(getLocalHour(doc.createdAt, analyticsTimeZone)),
+      )?.key || null;
+    } else {
+      bucketKey = getBucketKeyForDate(doc.createdAt, bucketMeta.buckets);
+    }
+
+    if (!branchId || !bucketKey) {
+      return;
+    }
+
+    const compositeKey = `${branchId}__${bucketKey}`;
+    revenueMap.set(compositeKey, (revenueMap.get(compositeKey) || 0) + (doc.paidAmount || 0));
+  });
+
+  const chartData = buildMetricChartData({
+    buckets: bucketMeta.buckets,
+    series: scope.series,
+    branches: scope.branches,
+    mode: scope.mode,
+    valueMap: revenueMap,
+    totalRoomsByBranch,
+    metricType: "revpar",
+  });
+
+  return {
+    series: scope.series,
+    branches: scope.series,
+    year: bucketMeta.year,
+    month: bucketMeta.month,
+    view: bucketMeta.view,
     chartData,
   };
 };
@@ -1050,6 +1483,12 @@ exports.getRevPARTrend = async (user, year) => {
 */
 
 exports.getRoomRevenueChart = async ({ user, branchId, view, year }) => {
+  const activeBranch = await ensureActiveBranch(branchId);
+
+  if (!activeBranch) {
+    return [];
+  }
+
   const selectedYear = parseInt(year) || new Date().getFullYear();
   if (view === "today") {
     const todayStart = new Date();
@@ -1057,59 +1496,36 @@ exports.getRoomRevenueChart = async ({ user, branchId, view, year }) => {
 
     const todayEnd = new Date();
     todayEnd.setHours(23, 59, 59, 999);
-
-    // const testData = await Invoice.find().limit(5);
-    // // console.log("Sample Invoice Data:", testData);
-
-    const todayRevenueAgg = await Invoice.aggregate([
-      {
-        $match: {
-          $expr: {
-            $eq: ["$branchId", { $toObjectId: branchId }],
-          },
-          createdAt: { $gte: todayStart, $lte: todayEnd },
-          isActive: true,
-          referenceType: "BOOKING",
-        }
+    const timeZone = activeBranch.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    const todayReferenceDate = new Date();
+    const todayRevenueDocs = await Invoice.find({
+      $expr: {
+        $eq: ["$branchId", { $toObjectId: activeBranch._id.toString() }],
       },
-      {
-        $addFields: {
-          hour: { $hour: "$createdAt" },
-        },
-      },
-      {
-        $addFields: {
-          period: {
-            $switch: {
-              branches: [
-                { case: { $lt: ["$hour", 6] }, then: "12AM-6AM" },
-                { case: { $lt: ["$hour", 12] }, then: "6AM-12PM" },
-                { case: { $lt: ["$hour", 18] }, then: "12PM-6PM" },
-              ],
-              default: "6PM-12AM",
-            },
-          },
-        },
-      },
-      {
-        $group: {
-          _id: "$period",
-          revenue: { $sum: "$paidAmount" },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]);
+      createdAt: { $gte: new Date(todayStart.getTime() - 36 * 60 * 60 * 1000), $lte: todayEnd },
+      isActive: true,
+      referenceType: "BOOKING",
+    })
+      .select("createdAt paidAmount")
+      .lean();
 
-    const formatHour = (h) => {
-      const suffix = h >= 12 ? "PM" : "AM";
-      const hour = h % 12 === 0 ? 12 : h % 12;
-      return `${hour}${suffix}`;
-    };
+    const revenueMap = new Map();
 
-    return todayRevenueAgg.map((r) => ({
-      period: r._id,
-      revenue: r.revenue,
-    }));
+    todayRevenueDocs.forEach((doc) => {
+      if (!isSameLocalDate(doc.createdAt, todayReferenceDate, timeZone)) {
+        return;
+      }
+
+      const bucketStart = getTwoHourBucketStart(getLocalHour(doc.createdAt, timeZone));
+      revenueMap.set(bucketStart, (revenueMap.get(bucketStart) || 0) + (doc.paidAmount || 0));
+    });
+
+    return Array.from(revenueMap.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([bucketStart, revenue]) => ({
+        period: formatTwoHourRangeLabel(bucketStart),
+        revenue,
+      }));
   }
 
   if (view === "monthly") {
@@ -1123,7 +1539,7 @@ exports.getRoomRevenueChart = async ({ user, branchId, view, year }) => {
       {
         $match: {
           $expr: {
-            $eq: ["$branchId", { $toObjectId: branchId }],
+            $eq: ["$branchId", { $toObjectId: activeBranch._id.toString() }],
           },
           createdAt: { $gte: monthStart, $lte: monthEnd },
           isActive: true,
@@ -1162,7 +1578,7 @@ exports.getRoomRevenueChart = async ({ user, branchId, view, year }) => {
       {
         $match: {
           $expr: {
-            $eq: ["$branchId", { $toObjectId: branchId }],
+            $eq: ["$branchId", { $toObjectId: activeBranch._id.toString() }],
           },
           createdAt: { $gte: yearStart, $lte: yearEnd },
           isActive: true,
@@ -1216,7 +1632,7 @@ exports.getRoomRevenueChart = async ({ user, branchId, view, year }) => {
       {
         $match: {
           $expr: {
-            $eq: ["$branchId", { $toObjectId: branchId }],
+            $eq: ["$branchId", { $toObjectId: activeBranch._id.toString() }],
           },
           createdAt: { $gte: yearStart, $lte: yearEnd },
           isActive: true,
@@ -1266,6 +1682,12 @@ exports.getRestaurantRevenueChart = async ({ user, branchId, view, year }) => {
   console.log("BranchId:", branchId);
   console.log("Selected Year:", year);
 
+  const activeBranch = await ensureActiveBranch(branchId);
+
+  if (!activeBranch) {
+    return [];
+  }
+
   const selectedYear = parseInt(year) || new Date().getFullYear();
 
   if (view === "today") {
@@ -1275,49 +1697,36 @@ exports.getRestaurantRevenueChart = async ({ user, branchId, view, year }) => {
     const todayEnd = new Date();
     todayEnd.setHours(23, 59, 59, 999);
 
-    const result = await POSOrder.aggregate([
-      {
-        $match: {
-          $expr: {
-            $eq: [{ $toObjectId: "$branchId" }, { $toObjectId: branchId }],
-          },
-          paymentStatus: "PAID",
-          createdAt: { $gte: todayStart, $lte: todayEnd },
-          isActive: true,
-        },
+    const timeZone = activeBranch.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    const todayReferenceDate = new Date();
+    const result = await POSOrder.find({
+      $expr: {
+        $eq: [{ $toObjectId: "$branchId" }, { $toObjectId: activeBranch._id.toString() }],
       },
-      {
-        $addFields: {
-          hour: { $hour: "$createdAt" },
-        },
-      },
-      {
-        $addFields: {
-          period: {
-            $switch: {
-              branches: [
-                { case: { $lt: ["$hour", 6] }, then: "12AM-6AM" },
-                { case: { $lt: ["$hour", 12] }, then: "6AM-12PM" },
-                { case: { $lt: ["$hour", 18] }, then: "12PM-6PM" },
-              ],
-              default: "6PM-12AM",
-            },
-          },
-        },
-      },
-      {
-        $group: {
-          _id: "$period",
-          revenue: { $sum: "$grandTotal" },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]);
+      paymentStatus: "PAID",
+      createdAt: { $gte: new Date(todayStart.getTime() - 36 * 60 * 60 * 1000), $lte: todayEnd },
+      isActive: true,
+    })
+      .select("createdAt grandTotal")
+      .lean();
 
-    const finalData = result.map((r) => ({
-      period: r._id,
-      revenue: r.revenue,
-    }));
+    const revenueMap = new Map();
+
+    result.forEach((doc) => {
+      if (!isSameLocalDate(doc.createdAt, todayReferenceDate, timeZone)) {
+        return;
+      }
+
+      const bucketStart = getTwoHourBucketStart(getLocalHour(doc.createdAt, timeZone));
+      revenueMap.set(bucketStart, (revenueMap.get(bucketStart) || 0) + (doc.grandTotal || 0));
+    });
+
+    const finalData = Array.from(revenueMap.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([bucketStart, revenue]) => ({
+        period: formatTwoHourRangeLabel(bucketStart),
+        revenue,
+      }));
 
     return finalData.length ? finalData : [];
   }
@@ -1333,7 +1742,7 @@ exports.getRestaurantRevenueChart = async ({ user, branchId, view, year }) => {
       {
         $match: {
           $expr: {
-            $eq: [{ $toObjectId: "$branchId" }, { $toObjectId: branchId }],
+            $eq: [{ $toObjectId: "$branchId" }, { $toObjectId: activeBranch._id.toString() }],
           },
           createdAt: {
             $gte: monthStart,
@@ -1377,7 +1786,7 @@ exports.getRestaurantRevenueChart = async ({ user, branchId, view, year }) => {
       {
         $match: {
           $expr: {
-            $eq: [{ $toObjectId: "$branchId" }, { $toObjectId: branchId }],
+            $eq: [{ $toObjectId: "$branchId" }, { $toObjectId: activeBranch._id.toString() }],
           },
           createdAt: {
             $gte: yearStart,
@@ -1436,7 +1845,7 @@ exports.getRestaurantRevenueChart = async ({ user, branchId, view, year }) => {
       {
         $match: {
           $expr: {
-            $eq: [{ $toObjectId: "$branchId" }, { $toObjectId: branchId }],
+            $eq: [{ $toObjectId: "$branchId" }, { $toObjectId: activeBranch._id.toString() }],
           },
           paymentStatus: "PAID",
           createdAt: { $gte: yearStart, $lte: yearEnd },

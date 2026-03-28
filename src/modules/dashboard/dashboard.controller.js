@@ -7,6 +7,11 @@ const Invoice = require("../invoice/invoice.model");
 const POSOrder = require("../pos/posOrder.model");
 const Room = require("../room/room.model");
 const AuditLog = require("../audit/audit.model");
+const {
+  buildBranchReferenceMatch,
+  getActiveBranchIds,
+  getActiveOrganizationIds,
+} = require("../../utils/workspaceScope");
 
 const toNumber = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0);
 const toTitleCase = (value) =>
@@ -54,21 +59,33 @@ const getActivityType = (action = "") => {
 };
 
 const getGlobalRevenueKpi = async ({ role, organizationId }) => {
+  const activeOrganizationIds =
+    role === "CORPORATE_ADMIN"
+      ? await getActiveOrganizationIds({ organizationId })
+      : await getActiveOrganizationIds();
+  const activeBranchIds =
+    role === "CORPORATE_ADMIN"
+      ? await getActiveBranchIds({ organizationId })
+      : await getActiveBranchIds();
+
+  if (!activeBranchIds.length || !activeOrganizationIds.length) {
+    return 0;
+  }
+
   const invoiceMatch = {
     isActive: true,
     status: "PAID",
     referenceType: "BOOKING",
+    organizationId: { $in: activeOrganizationIds },
+    branchId: buildBranchReferenceMatch(activeBranchIds),
   };
 
   const posMatch = {
     isActive: true,
     paymentStatus: "PAID",
+    organizationId: { $in: activeOrganizationIds },
+    branchId: buildBranchReferenceMatch(activeBranchIds),
   };
-
-  if (role === "CORPORATE_ADMIN") {
-    invoiceMatch.organizationId = organizationId;
-    posMatch.organizationId = organizationId;
-  }
 
   const [roomRevenueAgg, posRevenueAgg] = await Promise.all([
     Invoice.aggregate([
@@ -156,24 +173,50 @@ const getRevenueTrendData = async ({ role, organizationId }) => {
   const currentYear = new Date().getFullYear();
   const yearStart = new Date(currentYear, 0, 1);
   const yearEnd = new Date(currentYear, 11, 31, 23, 59, 59, 999);
+  const months = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
+
+  const activeOrganizationIds =
+    role === "CORPORATE_ADMIN"
+      ? await getActiveOrganizationIds({ organizationId })
+      : await getActiveOrganizationIds();
+  const activeBranchIds =
+    role === "CORPORATE_ADMIN"
+      ? await getActiveBranchIds({ organizationId })
+      : await getActiveBranchIds();
+
+  if (!activeBranchIds.length || !activeOrganizationIds.length) {
+    return months.map((month) => ({ month, revenue: 0 }));
+  }
 
   const invoiceMatch = {
     isActive: true,
     status: "PAID",
     referenceType: "BOOKING",
     createdAt: { $gte: yearStart, $lte: yearEnd },
+    organizationId: { $in: activeOrganizationIds },
+    branchId: buildBranchReferenceMatch(activeBranchIds),
   };
 
   const posMatch = {
     isActive: true,
     paymentStatus: "PAID",
     createdAt: { $gte: yearStart, $lte: yearEnd },
+    organizationId: { $in: activeOrganizationIds },
+    branchId: buildBranchReferenceMatch(activeBranchIds),
   };
-
-  if (role === "CORPORATE_ADMIN") {
-    invoiceMatch.organizationId = organizationId;
-    posMatch.organizationId = organizationId;
-  }
 
   const [roomRevenueAgg, posRevenueAgg] = await Promise.all([
     Invoice.aggregate([
@@ -209,21 +252,6 @@ const getRevenueTrendData = async ({ role, organizationId }) => {
     if (!month) return;
     revenueByMonth.set(month, toNumber(revenueByMonth.get(month)) + toNumber(item.revenue));
   });
-
-  const months = [
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-  ];
 
   return months.map((month, index) => ({
     month,
@@ -458,12 +486,22 @@ const getDashboardOverview = async (req, res) => {
     const startOfQuarter = new Date(now.getFullYear(), now.getMonth() - 3, 1);
 
     if (role === "SUPER_ADMIN") {
+      const activeOrganizationIds = await getActiveOrganizationIds();
+      const activeBranchIds = await getActiveBranchIds();
+      const activeBranchMatch = buildBranchReferenceMatch(activeBranchIds);
+
       totalOrganizations = await Organization.countDocuments();
       totalBranches = await Branch.countDocuments();
       activeUsers = await User.countDocuments({ isActive: true });
 
       const totalAgg = await Booking.aggregate([
-        { $match: { paymentStatus: "PAID" } },
+        {
+          $match: {
+            paymentStatus: "PAID",
+            organizationId: { $in: activeOrganizationIds },
+            branchId: activeBranchMatch,
+          },
+        },
         { $group: { _id: null, total: { $sum: "$totalAmount" } } },
       ]);
 
@@ -474,6 +512,8 @@ const getDashboardOverview = async (req, res) => {
           $match: {
             paymentStatus: "PAID",
             createdAt: { $gte: startOfMonth },
+            organizationId: { $in: activeOrganizationIds },
+            branchId: activeBranchMatch,
           },
         },
         { $group: { _id: null, total: { $sum: "$totalAmount" } } },
@@ -486,6 +526,8 @@ const getDashboardOverview = async (req, res) => {
           $match: {
             paymentStatus: "PAID",
             createdAt: { $gte: startOfQuarter },
+            organizationId: { $in: activeOrganizationIds },
+            branchId: activeBranchMatch,
           },
         },
         { $group: { _id: null, total: { $sum: "$totalAmount" } } },
@@ -493,6 +535,8 @@ const getDashboardOverview = async (req, res) => {
 
       quarterlyRevenue = quarterlyAgg[0]?.total || 0;
     } else if (role === "CORPORATE_ADMIN") {
+      const activeBranchIds = await getActiveBranchIds({ organizationId });
+      const activeBranchMatch = buildBranchReferenceMatch(activeBranchIds);
       totalOrganizations = 1;
 
       totalBranches = await Branch.countDocuments({
@@ -507,6 +551,7 @@ const getDashboardOverview = async (req, res) => {
       const match = {
         organizationId,
         paymentStatus: "PAID",
+        branchId: activeBranchMatch,
       };
 
       const totalAgg = await Booking.aggregate([

@@ -35,6 +35,7 @@ const requirePermission = (user, permission) => {
   Create Booking
 */
 const Branch = require("../branch/branch.model");
+const { ensureActiveBranch } = require("../../utils/workspaceScope");
 
 const normalizeGuests = (guests) =>
   Array.isArray(guests)
@@ -212,6 +213,10 @@ exports.getBookings = async (user) => {
     throw new Error("No active branch selected");
   }
 
+  if (!(await ensureActiveBranch(user.branchId))) {
+    throw new Error("Branch not found");
+  }
+
   return await Booking.find({
     branchId: user.branchId,
     isActive: true,
@@ -223,6 +228,10 @@ exports.getBookingById = async (bookingId, user) => {
 
   if (!user.branchId) {
     throw new Error("No active branch selected");
+  }
+
+  if (!(await ensureActiveBranch(user.branchId))) {
+    throw new Error("Branch not found");
   }
 
   const booking = await Booking.findOne({
@@ -245,6 +254,10 @@ exports.updateBooking = async (bookingId, data, user) => {
   session.startTransaction();
 
   try {
+    if (!(await ensureActiveBranch(user.branchId))) {
+      throw new Error("Branch not found");
+    }
+
     const booking = await Booking.findOne({
       bookingId,
       branchId: user.branchId,
@@ -351,6 +364,10 @@ exports.deleteBooking = async (bookingId, user) => {
   session.startTransaction();
 
   try {
+    if (!(await ensureActiveBranch(user.branchId))) {
+      throw new Error("Branch not found");
+    }
+
     const booking = await Booking.findOne({
       bookingId,
       branchId: user.branchId,
@@ -400,6 +417,10 @@ exports.updateBookingStatus = async (bookingId, status, user) => {
   session.startTransaction();
 
   try {
+    if (!(await ensureActiveBranch(user.branchId))) {
+      throw new Error("Branch not found");
+    }
+
     const booking = await Booking.findOne({
       bookingId: bookingId,
       branchId: user.branchId, // ✅ ensure correct workspace isolation

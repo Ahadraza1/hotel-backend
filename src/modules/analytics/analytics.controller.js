@@ -143,9 +143,9 @@ exports.getBranchDashboard = asyncHandler(async (req, res) => {
 */
 exports.getRevenueByBranch = asyncHandler(async (req, res) => {
 
-  const { view, year, month } = req.query;
+  const { view, year, month, mode } = req.query;
 
-  const data = await analyticsService.getRevenueByBranch(req.user, view, year, month);
+  const data = await analyticsService.getRevenueByBranch(req.user, view, year, month, mode);
 
   return res.status(200).json({
     success: true,
@@ -159,7 +159,9 @@ exports.getRevenueByBranch = asyncHandler(async (req, res) => {
 */
 exports.getOccupancyTrend = asyncHandler(async (req, res) => {
 
-  const data = await analyticsService.getOccupancyTrend(req.user, req.query.year);
+  const { view, year, month, mode } = req.query;
+
+  const data = await analyticsService.getOccupancyTrend(req.user, view, year, month, mode);
 
   return res.status(200).json({
     success: true,
@@ -172,7 +174,9 @@ exports.getOccupancyTrend = asyncHandler(async (req, res) => {
 */
 exports.getRevPARTrend = asyncHandler(async (req, res) => {
 
-  const data = await analyticsService.getRevPARTrend(req.user, req.query.year);
+  const { view, year, month, mode } = req.query;
+
+  const data = await analyticsService.getRevPARTrend(req.user, view, year, month, mode);
 
   return res.status(200).json({
     success: true,

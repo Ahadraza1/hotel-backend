@@ -1,7 +1,7 @@
 const Guest = require("./guest.model");
 const Booking = require("../booking/booking.model");
-const Invoice = require("../invoice/invoice.model");
 const Branch = require("../branch/branch.model");
+const { ensureActiveBranch } = require("../../utils/workspaceScope");
 
 /*
   Permission Helper
@@ -89,6 +89,10 @@ exports.getGuests = async (user, branchId) => {
     throw new Error("No active branch selected");
   }
 
+  if (!(await ensureActiveBranch(activeBranchId))) {
+    throw new Error("Branch not found");
+  }
+
   return await Guest.find({
     branchId: activeBranchId,
     isActive: true,
@@ -100,6 +104,10 @@ exports.getGuests = async (user, branchId) => {
 */
 exports.updateGuest = async (guestId, data, user) => {
   requirePermission(user, "ACCESS_CRM");
+
+  if (!(await ensureActiveBranch(user.branchId))) {
+    throw new Error("Branch not found");
+  }
 
   const guest = await Guest.findOne({
     guestId,
@@ -124,6 +132,10 @@ exports.updateGuest = async (guestId, data, user) => {
 exports.deleteGuest = async (guestId, user) => {
   requirePermission(user, "ACCESS_CRM");
 
+  if (!(await ensureActiveBranch(user.branchId))) {
+    throw new Error("Branch not found");
+  }
+
   const guest = await Guest.findOne({
     guestId,
     branchId: user.branchId,
@@ -146,6 +158,10 @@ exports.deleteGuest = async (guestId, user) => {
 exports.toggleVIP = async (guestId, user) => {
   requirePermission(user, "ACCESS_CRM");
 
+  if (!(await ensureActiveBranch(user.branchId))) {
+    throw new Error("Branch not found");
+  }
+
   const guest = await Guest.findOne({
     guestId,
     branchId: user.branchId,
@@ -166,6 +182,10 @@ exports.toggleVIP = async (guestId, user) => {
 */
 exports.toggleBlacklist = async (guestId, user) => {
   requirePermission(user, "ACCESS_CRM");
+
+  if (!(await ensureActiveBranch(user.branchId))) {
+    throw new Error("Branch not found");
+  }
 
   const guest = await Guest.findOne({
     guestId,
@@ -188,33 +208,60 @@ exports.toggleBlacklist = async (guestId, user) => {
 exports.getGuestProfile = async (guestId, user) => {
   requirePermission(user, "ACCESS_CRM");
 
+  if (!(await ensureActiveBranch(user.branchId))) {
+    throw new Error("Branch not found");
+  }
+
   const guest = await Guest.findOne({
     guestId,
     branchId: user.branchId,
-  });
+  }).lean();
 
   if (!guest) {
     throw new Error("Guest not found");
   }
 
-  const bookings = await Booking.find({
-    branchId: user.branchId,
-    guestEmail: guest.email,
-  }).sort({ createdAt: -1 });
+  const bookingFilters = [];
 
-  const invoices = await Invoice.find({
-    branchId: user.branchId,
-  });
+  if (guest.email) {
+    bookingFilters.push({ guestEmail: guest.email });
+  }
 
-  const totalSpent = invoices.reduce(
-    (sum, inv) => sum + (inv.paidAmount || 0),
-    0,
-  );
+  if (guest.phone) {
+    bookingFilters.push({ guestPhone: guest.phone });
+  }
 
-  const loyaltyPoints = Math.floor(totalSpent / 100);
+  let bookings = [];
+
+  if (bookingFilters.length > 0 || guest.bookingHistory?.length) {
+    const bookingQuery = {
+      branchId: user.branchId,
+      isActive: true,
+    };
+
+    if (bookingFilters.length > 0) {
+      bookingQuery.$or = bookingFilters;
+    } else {
+      bookingQuery.bookingId = {
+        $in: guest.bookingHistory.map((entry) => entry.bookingId).filter(Boolean),
+      };
+    }
+
+    bookings = await Booking.find(bookingQuery)
+      .populate("roomId", "roomNumber roomId")
+      .sort({ createdAt: -1 })
+      .lean();
+  }
+
+  const totalSpent = guest.totalSpent || 0;
+  const loyaltyPoints = guest.loyaltyPoints || Math.floor(totalSpent / 100);
+  const documents = Array.from(new Set((guest.documents || []).filter(Boolean)));
 
   return {
-    guest,
+    guest: {
+      ...guest,
+      documents,
+    },
     bookings,
     totalSpent,
     loyaltyPoints,

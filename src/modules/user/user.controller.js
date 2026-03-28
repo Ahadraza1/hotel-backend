@@ -23,7 +23,10 @@ const ensureUserManagementAccess = (actor, targetUser) => {
 */
 exports.getCurrentUser = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
+    const user = await User.findOne({
+      _id: req.user.id,
+      isDeleted: { $ne: true },
+    });
 
     if (!user) {
       return res.status(404).json({
@@ -58,7 +61,9 @@ exports.getUsers = async (req, res) => {
       });
     }
 
-    const filter = {};
+    const filter = {
+      isDeleted: { $ne: true },
+    };
 
     if (req.user.role === "CORPORATE_ADMIN") {
       if (!req.user.organizationId) {
@@ -90,8 +95,11 @@ exports.getUsers = async (req, res) => {
 */
 exports.updateCurrentUser = async (req, res) => {
   try {
-    const updatedUser = await User.findByIdAndUpdate(
-      req.user.userId,
+    const updatedUser = await User.findOneAndUpdate(
+      {
+        _id: req.user.userId,
+        isDeleted: { $ne: true },
+      },
       req.body,
       { new: true }
     ).select("-password");
@@ -126,7 +134,10 @@ exports.updatePassword = async (req, res) => {
       });
     }
 
-    const user = await User.findById(req.user.userId || req.user.id).select("+password");
+    const user = await User.findOne({
+      _id: req.user.userId || req.user.id,
+      isDeleted: { $ne: true },
+    }).select("+password");
 
     if (!user) {
       return res.status(404).json({
@@ -165,7 +176,10 @@ exports.updatePassword = async (req, res) => {
 */
 exports.updateAvatar = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
+    const user = await User.findOne({
+      _id: req.user.id,
+      isDeleted: { $ne: true },
+    });
 
     if (!user) {
       return res.status(404).json({
@@ -200,6 +214,38 @@ exports.updateAvatar = async (req, res) => {
     console.error("Avatar update error:", error);
     return res.status(500).json({
       message: "Failed to update avatar",
+    });
+  }
+};
+
+/*
+  Delete Current User Account
+*/
+exports.deleteCurrentUser = async (req, res) => {
+  try {
+    const user = await User.findOne({
+      _id: req.user.userId || req.user.id,
+      isDeleted: { $ne: true },
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        message: "User not found",
+      });
+    }
+
+    user.isDeleted = true;
+    user.deletedAt = new Date();
+    user.isActive = false;
+    await user.save();
+
+    return res.status(200).json({
+      message: "Account deleted successfully",
+    });
+  } catch (error) {
+    console.error("Delete current user error:", error);
+    return res.status(500).json({
+      message: "Failed to delete account",
     });
   }
 };

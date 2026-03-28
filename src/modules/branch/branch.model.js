@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const { v4: uuidv4 } = require("uuid");
+const { applySoftDeleteBehavior } = require("../../utils/workspaceScope");
 
 const branchSchema = new mongoose.Schema(
   {
@@ -70,6 +71,17 @@ const branchSchema = new mongoose.Schema(
       default: true,
     },
 
+    isDeleted: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
+    deletedAt: {
+      type: Date,
+      default: null,
+    },
+
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -83,5 +95,7 @@ const branchSchema = new mongoose.Schema(
   Ensure branch name is unique per organization
 */
 branchSchema.index({ organizationId: 1, name: 1 }, { unique: true });
+
+applySoftDeleteBehavior(branchSchema);
 
 module.exports = mongoose.model("Branch", branchSchema);

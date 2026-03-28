@@ -16,6 +16,11 @@ router.get("/me", requireAuth, userController.getCurrentUser);
 router.put("/me", requireAuth, userController.updateCurrentUser);
 
 /*
+  Delete Current User Account
+*/
+router.delete("/me", requireAuth, userController.deleteCurrentUser);
+
+/*
   Update Password
 */
 router.put("/update-password", requireAuth, userController.updatePassword);

@@ -6,6 +6,7 @@ const Branch = require("../branch/branch.model");
 const Booking = require("../booking/booking.model");
 const POSOrder = require("../pos/posOrder.model");
 const branchSettingsService = require("../branchSettings/branchSettings.service");
+const { ensureActiveBranch } = require("../../utils/workspaceScope");
 
 /*
   Permission Helper
@@ -36,6 +37,10 @@ exports.getInvoices = async (user, filters = {}) => {
 
   if (!user.branchId) {
     throw new Error("No active branch selected");
+  }
+
+  if (!(await ensureActiveBranch(user.branchId))) {
+    throw new Error("Branch not found");
   }
 
   const query = {
@@ -72,6 +77,10 @@ exports.recordPayment = async (invoiceId, data, user) => {
   session.startTransaction();
 
   try {
+    if (!(await ensureActiveBranch(user.branchId))) {
+      throw new Error("Branch not found");
+    }
+
     const { amount, method } = data;
 
     if (!amount || amount <= 0) {
@@ -196,6 +205,10 @@ exports.recordPayment = async (invoiceId, data, user) => {
 exports.deactivateInvoice = async (invoiceId, user) => {
   requirePermission(user, "ACCESS_FINANCE");
 
+  if (!(await ensureActiveBranch(user.branchId))) {
+    throw new Error("Branch not found");
+  }
+
   const invoice = await Invoice.findOne({
     invoiceId,
     branchId: user.branchId,
@@ -216,6 +229,10 @@ exports.deactivateInvoice = async (invoiceId, user) => {
 */
 exports.updateInvoice = async (invoiceId, data, user) => {
   requirePermission(user, 'ACCESS_FINANCE');
+
+  if (!(await ensureActiveBranch(user.branchId))) {
+    throw new Error("Branch not found");
+  }
 
   const invoice = await Invoice.findOne({
     invoiceId,
@@ -253,6 +270,10 @@ exports.updateInvoice = async (invoiceId, data, user) => {
 */
 exports.deleteInvoice = async (invoiceId, user) => {
   requirePermission(user, 'ACCESS_FINANCE');
+
+  if (!(await ensureActiveBranch(user.branchId))) {
+    throw new Error("Branch not found");
+  }
 
   const result = await Invoice.deleteOne({
     invoiceId,

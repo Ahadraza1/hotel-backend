@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const { v4: uuidv4 } = require("uuid");
+const { applySoftDeleteBehavior } = require("../../utils/workspaceScope");
 
 const organizationSchema = new mongoose.Schema(
   {
@@ -99,6 +100,17 @@ const organizationSchema = new mongoose.Schema(
       default: true,
     },
 
+    isDeleted: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
+    deletedAt: {
+      type: Date,
+      default: null,
+    },
+
     // NEW FIELD - Organization Block Status
     isBlocked: {
       type: Boolean,
@@ -126,5 +138,7 @@ const organizationSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+
+applySoftDeleteBehavior(organizationSchema);
 
 module.exports = mongoose.model("Organization", organizationSchema);

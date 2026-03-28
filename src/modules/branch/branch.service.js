@@ -354,16 +354,30 @@ exports.deleteBranch = async (branchId, user) => {
   }
 
   if (user.role === "SUPER_ADMIN") {
-    await branch.deleteOne();
-    return branch;
+    return Branch.findByIdAndUpdate(
+      branchId,
+      {
+        isDeleted: true,
+        deletedAt: new Date(),
+        isActive: false,
+      },
+      { new: true },
+    );
   }
 
   if (
     user.role === "CORPORATE_ADMIN" &&
     branch.organizationId.toString() === user.organizationId?.toString()
   ) {
-    await branch.deleteOne();
-    return branch;
+    return Branch.findByIdAndUpdate(
+      branchId,
+      {
+        isDeleted: true,
+        deletedAt: new Date(),
+        isActive: false,
+      },
+      { new: true },
+    );
   }
 
   throw new Error("Access denied");

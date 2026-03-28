@@ -1,5 +1,9 @@
 const Notification = require("./notification.model");
 const Role = require("../rbac/role.model");
+const {
+  ensureActiveBranch,
+  ensureActiveOrganization,
+} = require("../../utils/workspaceScope");
 
 const SUPERADMIN_ROLES = new Set(["SUPER_ADMIN", "SUPERADMIN"]);
 
@@ -64,10 +68,16 @@ const buildNotificationQueryForUser = async (user = {}) => {
       if (!organizationId) {
         return null;
       }
+      if (!(await ensureActiveOrganization(organizationId))) {
+        return null;
+      }
       query.organizationId = organizationId;
     } else if (role === "BRANCH_MANAGER") {
       const branchId = normalizeIdentifier(user.branchId);
       if (!branchId) {
+        return null;
+      }
+      if (!(await ensureActiveBranch(branchId))) {
         return null;
       }
       query.branchId = branchId;
@@ -76,10 +86,16 @@ const buildNotificationQueryForUser = async (user = {}) => {
       if (!branchId) {
         return null;
       }
+      if (!(await ensureActiveBranch(branchId))) {
+        return null;
+      }
       query.branchId = branchId;
     } else if (user.organizationId) {
       const organizationId = normalizeIdentifier(user.organizationId);
       if (!organizationId) {
+        return null;
+      }
+      if (!(await ensureActiveOrganization(organizationId))) {
         return null;
       }
       query.organizationId = organizationId;

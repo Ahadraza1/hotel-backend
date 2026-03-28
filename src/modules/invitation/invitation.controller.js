@@ -5,6 +5,10 @@ const { sendEmail } = require("../../utils/sendEmail");
 const InvitationAudit = require("./invitationAudit.model");
 const Organization = require("../organization/organization.model");
 const Branch = require("../branch/branch.model");
+const {
+  ensureActiveBranch,
+  ensureActiveOrganization,
+} = require("../../utils/workspaceScope");
 
 const normalizeInvitedRole = (role) => {
   const legacyRoleMap = {
@@ -93,6 +97,18 @@ exports.createInvitation = async (req, res) => {
     // 🔥 CORPORATE_ADMIN
     if (inviter.role === "CORPORATE_ADMIN") {
       branchId = req.body.branchId || null;
+    }
+
+    if (organizationId && !(await ensureActiveOrganization(organizationId))) {
+      return res.status(404).json({
+        message: "Organization not found",
+      });
+    }
+
+    if (branchId && !(await ensureActiveBranch(branchId))) {
+      return res.status(404).json({
+        message: "Branch not found",
+      });
     }
 
     // Safety check for non-super-admin users
@@ -292,6 +308,16 @@ exports.acceptInvitation = async (req, res) => {
     if (existingUser) {
       return res.status(400).json({
         message: "User already exists with this email",
+      });
+    }
+
+    if (
+      (invitation.organizationId &&
+        !(await ensureActiveOrganization(invitation.organizationId))) ||
+      (invitation.branchId && !(await ensureActiveBranch(invitation.branchId)))
+    ) {
+      return res.status(400).json({
+        message: "Invitation is no longer valid",
       });
     }
 

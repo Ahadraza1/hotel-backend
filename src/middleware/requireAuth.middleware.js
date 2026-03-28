@@ -1,6 +1,7 @@
 const jwt = require("jsonwebtoken");
 const Organization = require("../modules/organization/organization.model");
 const subscriptionService = require("../modules/subscription/subscription.service");
+const User = require("../modules/user/user.model");
 
 const isSubscriptionBypassRoute = (req) => {
   const path = String(req.originalUrl || req.url || "");
@@ -62,6 +63,17 @@ const requireAuth = async (req, res, next) => {
     };
 
     // 🔒 SUPER ADMIN bypass
+    const activeUser = await User.findOne({
+      _id: req.user.id,
+      isDeleted: { $ne: true },
+    }).select("_id").lean();
+
+    if (!activeUser) {
+      return res.status(401).json({
+        message: "Unauthorized - User not found",
+      });
+    }
+
     if (req.user.isPlatformAdmin) {
       return next();
     }

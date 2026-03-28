@@ -15,6 +15,11 @@ const Organization = require("../organization/organization.model");
 const OrganizationSubscription = require("../subscription/organizationSubscription.model");
 const SubscriptionPayment = require("../subscription/subscriptionPayment.model");
 const subscriptionService = require("../subscription/subscription.service");
+const {
+  assertUserWorkspaceIsActive,
+  ensureActiveBranch,
+  ensureActiveOrganization,
+} = require("../../utils/workspaceScope");
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
@@ -570,6 +575,12 @@ exports.login = async (req, res) => {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
+    try {
+      await assertUserWorkspaceIsActive(user);
+    } catch (workspaceError) {
+      return res.status(403).json({ message: workspaceError.message });
+    }
+
     const permissions = await getRolePermissionsForUser(user);
     const subscriptionAccess = await getSubscriptionAccessForUser(user);
 
@@ -648,6 +659,19 @@ exports.acceptInvite = async (req, res) => {
       });
     }
 
+    const activeOrganization = invite.organizationId
+      ? await ensureActiveOrganization(invite.organizationId)
+      : null;
+    const activeBranch = invite.branchId
+      ? await ensureActiveBranch(invite.branchId)
+      : null;
+
+    if ((invite.organizationId && !activeOrganization) || (invite.branchId && !activeBranch)) {
+      return res.status(400).json({
+        message: "Invitation is no longer valid",
+      });
+    }
+
     const normalizedRole = normalizeInvitedRole(invite.role);
     const existingUser = await User.findOne({ email: invite.email });
 
@@ -718,6 +742,12 @@ exports.getMe = async (req, res) => {
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
+    }
+
+    try {
+      await assertUserWorkspaceIsActive(user);
+    } catch (workspaceError) {
+      return res.status(403).json({ message: workspaceError.message });
     }
 
     const permissions = await getRolePermissionsForUser(user);

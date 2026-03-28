@@ -4,6 +4,7 @@ const Payroll = require("./payroll.model");
 const mongoose = require("mongoose");
 const User = require("../user/user.model");
 const notificationService = require("../notification/notification.service");
+const { ensureActiveBranch } = require("../../utils/workspaceScope");
 
 /*
   Permission Helper
@@ -201,9 +202,15 @@ exports.getStaff = async (user, branchId) => {
 
   // 🔥 AUTO BRANCH DETECTION
   if (user.role === "BRANCH_MANAGER") {
+    if (!(await ensureActiveBranch(user.branchId))) {
+      throw new Error("Branch not found");
+    }
     branchFilter = buildBranchIdFilter(user.branchId);
   } 
   else if (branchId) {
+    if (!(await ensureActiveBranch(branchId))) {
+      throw new Error("Branch not found");
+    }
     branchFilter = buildBranchIdFilter(branchId);
   } 
   else {
@@ -380,6 +387,10 @@ exports.checkIn = async (staffId, branchId, user) => {
     throw error;
   }
 
+  if (!(await ensureActiveBranch(branchId))) {
+    throw new Error("Branch not found");
+  }
+
   const staff = await resolveStaffByIdentifier(staffId, branchId);
 
   if (!staff) {
@@ -450,6 +461,10 @@ exports.checkOut = async (staffId, branchId, user) => {
     throw error;
   }
 
+  if (!(await ensureActiveBranch(branchId))) {
+    throw new Error("Branch not found");
+  }
+
   const staff = await resolveStaffByIdentifier(staffId, branchId);
 
   if (!staff) {
@@ -507,6 +522,10 @@ exports.generatePayroll = async (staffId, branchId, month, year, user) => {
     const error = new Error("No active branch selected");
     error.statusCode = 400;
     throw error;
+  }
+
+  if (!(await ensureActiveBranch(branchId))) {
+    throw new Error("Branch not found");
   }
 
   const staff = await resolveStaffByIdentifier(staffId, branchId);
@@ -610,6 +629,10 @@ exports.getPayroll = async (user, branchId) => {
     throw new Error("BranchId is required");
   }
 
+  if (!(await ensureActiveBranch(branchId))) {
+    throw new Error("Branch not found");
+  }
+
   return await Payroll.find({
     branchId: buildBranchIdFilter(branchId),
     isActive: true,
@@ -618,6 +641,10 @@ exports.getPayroll = async (user, branchId) => {
 
 exports.updatePayroll = async (payrollId, data, user) => {
   requirePermission(user, "ACCESS_HR");
+
+  if (!(await ensureActiveBranch(user.branchId))) {
+    throw new Error("Branch not found");
+  }
 
   const payroll = await Payroll.findOne({
     payrollId,
@@ -654,6 +681,10 @@ exports.updatePayroll = async (payrollId, data, user) => {
 
 exports.deletePayroll = async (payrollId, user) => {
   requirePermission(user, "ACCESS_HR");
+
+  if (!(await ensureActiveBranch(user.branchId))) {
+    throw new Error("Branch not found");
+  }
 
   const payroll = await Payroll.findOne({
     payrollId,
