@@ -10,7 +10,7 @@ const fs = require("fs");
 */
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const uploadPath = "uploads/guest-identities";
+    const uploadPath = path.join(__dirname, "../../../uploads/guest-identities");
 
     if (!fs.existsSync(uploadPath)) {
       fs.mkdirSync(uploadPath, { recursive: true });
@@ -30,6 +30,7 @@ const upload = multer({ storage });
   Upload Middleware
 */
 exports.uploadGuestIdentities = upload.fields([
+  { name: "identityDocument", maxCount: 1 },
   { name: "mainGuestIdentity", maxCount: 1 },
   { name: "guestsIdentity", maxCount: 20 },
 ]);
@@ -63,12 +64,23 @@ const parseGuestsFromBody = (body) => {
 };
 
 const hydrateBookingBody = (req) => {
-  if (req.files?.mainGuestIdentity) {
-    req.body.mainGuestIdentity = req.files.mainGuestIdentity[0].filename;
+  const identityFile =
+    req.files?.identityDocument?.[0] || req.files?.mainGuestIdentity?.[0];
+
+  if (identityFile) {
+    const relativePath = `/uploads/guest-identities/${identityFile.filename}`;
+    req.body.identityDocument = {
+      url: relativePath,
+      fileName: identityFile.originalname,
+      fileType: identityFile.mimetype,
+    };
+    req.body.mainGuestIdentity = relativePath;
   }
 
   if (req.files?.guestsIdentity) {
-    req.body.guestsIdentity = req.files.guestsIdentity.map((f) => f.filename);
+    req.body.guestsIdentity = req.files.guestsIdentity.map(
+      (f) => `/uploads/guest-identities/${f.filename}`,
+    );
   }
 
   req.body.guests = parseGuestsFromBody(req.body);
@@ -179,5 +191,110 @@ exports.updateBookingStatus = asyncHandler(async (req, res) => {
     success: true,
     message: "Booking status updated successfully",
     data: updatedBooking,
+  });
+});
+
+exports.addBookingService = asyncHandler(async (req, res) => {
+  const { bookingId } = req.params;
+
+  if (!bookingId) {
+    throw new AppError("Booking ID is required", 400);
+  }
+
+  const booking = await bookingService.addBookingService(
+    bookingId,
+    req.body,
+    req.user,
+  );
+
+  return res.status(200).json({
+    success: true,
+    message: "Service added successfully",
+    data: booking,
+  });
+});
+
+exports.updateBookingService = asyncHandler(async (req, res) => {
+  const { bookingId, serviceId } = req.params;
+
+  if (!bookingId || !serviceId) {
+    throw new AppError("Booking ID and service ID are required", 400);
+  }
+
+  const booking = await bookingService.updateBookingService(
+    bookingId,
+    serviceId,
+    req.body,
+    req.user,
+  );
+
+  return res.status(200).json({
+    success: true,
+    message: "Service updated successfully",
+    data: booking,
+  });
+});
+
+exports.removeBookingService = asyncHandler(async (req, res) => {
+  const { bookingId, serviceId } = req.params;
+
+  if (!bookingId || !serviceId) {
+    throw new AppError("Booking ID and service ID are required", 400);
+  }
+
+  const booking = await bookingService.removeBookingService(
+    bookingId,
+    serviceId,
+    req.user,
+  );
+
+  return res.status(200).json({
+    success: true,
+    message: "Service removed successfully",
+    data: booking,
+  });
+});
+
+exports.processBookingPayment = asyncHandler(async (req, res) => {
+  const { bookingId } = req.params;
+  const { method } = req.body;
+
+  if (!bookingId) {
+    throw new AppError("Booking ID is required", 400);
+  }
+
+  if (!method) {
+    throw new AppError("Payment method is required", 400);
+  }
+
+  const booking = await bookingService.processBookingPayment(
+    bookingId,
+    method,
+    req.user,
+  );
+
+  return res.status(200).json({
+    success: true,
+    message: "Payment processed successfully",
+    data: booking,
+  });
+});
+
+exports.generateBookingInvoice = asyncHandler(async (req, res) => {
+  const { bookingId } = req.params;
+
+  if (!bookingId) {
+    throw new AppError("Booking ID is required", 400);
+  }
+
+  const invoice = await bookingService.generateBookingInvoice(
+    bookingId,
+    req.user,
+  );
+
+  return res.status(200).json({
+    success: true,
+    message: "Invoice ready",
+    data: invoice,
   });
 });

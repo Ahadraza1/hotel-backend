@@ -59,9 +59,49 @@ router.delete(
 router.patch(
   "/:bookingId/status",
   requireAuth,
-  requirePermission("CANCEL_BOOKING"),
+  requirePermission("UPDATE_BOOKING"),
   auditMiddleware("BOOKING_STATUS_UPDATED", "BOOKING", "Updated booking status"),
   bookingController.updateBookingStatus
+);
+
+router.post(
+  "/:bookingId/services",
+  requireAuth,
+  requirePermission("UPDATE_BOOKING"),
+  auditMiddleware("BOOKING_SERVICE_ADDED", "BOOKING", "Added booking service"),
+  bookingController.addBookingService
+);
+
+router.patch(
+  "/:bookingId/services/:serviceId",
+  requireAuth,
+  requirePermission("UPDATE_BOOKING"),
+  auditMiddleware("BOOKING_SERVICE_UPDATED", "BOOKING", "Updated booking service"),
+  bookingController.updateBookingService
+);
+
+router.delete(
+  "/:bookingId/services/:serviceId",
+  requireAuth,
+  requirePermission("UPDATE_BOOKING"),
+  auditMiddleware("BOOKING_SERVICE_REMOVED", "BOOKING", "Removed booking service"),
+  bookingController.removeBookingService
+);
+
+router.post(
+  "/:bookingId/payment",
+  requireAuth,
+  requirePermission("UPDATE_BOOKING"),
+  auditMiddleware("BOOKING_PAYMENT_PROCESSED", "BOOKING", "Processed booking payment"),
+  bookingController.processBookingPayment
+);
+
+router.post(
+  "/:bookingId/invoice",
+  requireAuth,
+  requirePermission("VIEW_BOOKING"),
+  auditMiddleware("BOOKING_INVOICE_REQUESTED", "BOOKING", "Generated booking invoice"),
+  bookingController.generateBookingInvoice
 );
 
 module.exports = router;

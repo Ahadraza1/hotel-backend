@@ -89,6 +89,40 @@ const bookingSchema = new mongoose.Schema(
       lowercase: true,
     },
 
+    identityDocument: {
+      url: {
+        type: String,
+        trim: true,
+        default: null,
+      },
+      fileName: {
+        type: String,
+        trim: true,
+        default: null,
+      },
+      fileType: {
+        type: String,
+        trim: true,
+        default: null,
+      },
+    },
+
+    mainGuestIdentity: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+
+    guestsIdentity: {
+      type: [
+        {
+          type: String,
+          trim: true,
+        },
+      ],
+      default: [],
+    },
+
     // Stay Details
     // Stay Details
     checkInDate: {
@@ -119,6 +153,50 @@ const bookingSchema = new mongoose.Schema(
       min: 1,
     },
 
+    actualCheckIn: {
+      type: Date,
+      default: null,
+    },
+
+    actualCheckOut: {
+      type: Date,
+      default: null,
+    },
+
+    services: [
+      {
+        name: {
+          type: String,
+          required: true,
+          trim: true,
+        },
+        price: {
+          type: Number,
+          required: true,
+          min: 0,
+        },
+        quantity: {
+          type: Number,
+          required: true,
+          min: 1,
+          default: 1,
+        },
+        total: {
+          type: Number,
+          required: true,
+          min: 0,
+        },
+        createdAt: {
+          type: Date,
+          default: Date.now,
+        },
+        updatedAt: {
+          type: Date,
+          default: Date.now,
+        },
+      },
+    ],
+
     totalAmount: {
       type: Number,
       required: true,
@@ -137,6 +215,24 @@ const bookingSchema = new mongoose.Schema(
       type: String,
       enum: ["PENDING", "PARTIAL", "PAID"],
       default: "PENDING",
+      index: true,
+    },
+
+    paymentMethod: {
+      type: String,
+      enum: ["CASH", "CARD", "UPI"],
+      default: null,
+    },
+
+    paymentDate: {
+      type: Date,
+      default: null,
+    },
+
+    invoiceId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Invoice",
+      default: null,
       index: true,
     },
 
