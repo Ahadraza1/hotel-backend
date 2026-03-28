@@ -46,6 +46,11 @@ const normalizeGuests = (guests) =>
       }))
     : [];
 
+const normalizeBookingSource = (bookingSource) => {
+  const allowedSources = ["Walk-in", "Pre-booking", "Online"];
+  return allowedSources.includes(bookingSource) ? bookingSource : "Walk-in";
+};
+
 const ensureBookingRoomAvailability = async ({
   session,
   bookingId,
@@ -102,6 +107,7 @@ exports.createBooking = async (data, user) => {
       roomId,
       guestName,
       guestType,
+      bookingSource,
       guestPhone,
       guestEmail,
       totalGuests,
@@ -152,6 +158,7 @@ exports.createBooking = async (data, user) => {
 
           guestName,
           guestType,
+          bookingSource: normalizeBookingSource(bookingSource),
           guestPhone,
           guestEmail,
           totalGuests,
@@ -272,6 +279,7 @@ exports.updateBooking = async (bookingId, data, user) => {
       roomId,
       guestName,
       guestType,
+      bookingSource,
       guestPhone,
       guestEmail,
       totalGuests,
@@ -304,6 +312,7 @@ exports.updateBooking = async (bookingId, data, user) => {
     booking.roomId = room._id;
     booking.guestName = guestName;
     booking.guestType = guestType;
+    booking.bookingSource = normalizeBookingSource(bookingSource);
     booking.guestPhone = guestPhone;
     booking.guestEmail = guestEmail;
     booking.totalGuests = totalGuests;

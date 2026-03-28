@@ -45,6 +45,13 @@ const bookingSchema = new mongoose.Schema(
       required: true,
     },
 
+    bookingSource: {
+      type: String,
+      enum: ["Walk-in", "Pre-booking", "Online"],
+      default: "Walk-in",
+      trim: true,
+    },
+
     // Additional guests staying
     guests: [
       {
