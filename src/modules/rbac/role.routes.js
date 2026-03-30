@@ -3,7 +3,7 @@ const router = express.Router();
 
 const roleController = require("./role.controller");
 const requireAuth = require("../../middleware/requireAuth.middleware");
-const requirePermission = require("../../middleware/requirePermission.middleware");
+const requireSuperAdmin = require("../../middleware/requireSuperAdmin.middleware");
 
 /*
   Get All Roles
@@ -11,27 +11,28 @@ const requirePermission = require("../../middleware/requirePermission.middleware
 router.get(
   "/",
   requireAuth,
+  requireSuperAdmin,
   roleController.getRoles,
 );
 
 router.post(
   "/",
   requireAuth,
-  requirePermission("ACCESS_USERS"),
+  requireSuperAdmin,
   roleController.createRole,
 );
 
 router.put(
   "/:roleId/permissions",
   requireAuth,
-  requirePermission("ACCESS_USERS"),
+  requireSuperAdmin,
   roleController.updateRolePermissions,
 );
 
 router.delete(
   "/:roleId",
   requireAuth,
-  requirePermission("ACCESS_USERS"),
+  requireSuperAdmin,
   roleController.deleteRole,
 );
 

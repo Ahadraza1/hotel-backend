@@ -36,6 +36,7 @@ const seedRBAC = async () => {
       { name: "CREATE_USER", module: "USER" },
       { name: "UPDATE_USER", module: "USER" },
       { name: "DELETE_USER", module: "USER" },
+      { name: "VIEW_USER", module: "USER" },
 
       { name: "ACCESS_SETTINGS", module: "SYSTEM" },
       { name: "ACCESS_ANALYTICS", module: "ANALYTICS" },
@@ -69,6 +70,7 @@ const seedRBAC = async () => {
       { name: "CREATE_TASK", module: "HOUSEKEEPING" },
       { name: "UPDATE_TASK", module: "HOUSEKEEPING" },
       { name: "DELETE_TASK", module: "HOUSEKEEPING" },
+      { name: "VIEW_TASK", module: "HOUSEKEEPING" },
 
       // POS
       { name: "ACCESS_POS", module: "POS" },
@@ -76,24 +78,29 @@ const seedRBAC = async () => {
       { name: "UPDATE_POS_ORDER", module: "POS" },
       { name: "DELETE_POS_ORDER", module: "POS" },
       { name: "MANAGE_POS_MENU", module: "POS" },
+      { name: "VIEW_POS_MENU", module: "POS" },
 
       // INVENTORY
       { name: "ACCESS_INVENTORY", module: "INVENTORY" },
       { name: "CREATE_INVENTORY_ITEM", module: "INVENTORY" },
       { name: "UPDATE_INVENTORY_ITEM", module: "INVENTORY" },
       { name: "DELETE_INVENTORY_ITEM", module: "INVENTORY" },
+      { name: "VIEW_INVENTORY_ITEM", module: "INVENTORY" },
 
       // HR
       { name: "ACCESS_HR", module: "HR" },
       { name: "CREATE_EMPLOYEE", module: "HR" },
       { name: "UPDATE_EMPLOYEE", module: "HR" },
       { name: "DELETE_EMPLOYEE", module: "HR" },
+      { name: "VIEW_EMPLOYEE", module: "HR" },
+
 
       // FINANCE
       { name: "ACCESS_FINANCE", module: "FINANCE" },
       { name: "CREATE_INVOICE", module: "FINANCE" },
       { name: "RECORD_PAYMENT", module: "FINANCE" },
       { name: "CREATE_EXPENSE", module: "FINANCE" },
+      { name: "VIEW_EXPENSE", module: "FINANCE" },
 
       // REPORTS
       { name: "ACCESS_REPORTS", module: "REPORTS" },
@@ -101,6 +108,8 @@ const seedRBAC = async () => {
 
       // BRANCH SETTINGS
       { name: "ACCESS_BRANCH_SETTINGS", module: "BRANCH_SETTINGS" },
+       { name: "VIEW_BRANCH_SETTINGS", module: "BRANCH_SETTINGS" },
+
     ]);
 
     const getPermissionIds = (names) =>
@@ -123,17 +132,17 @@ const seedRBAC = async () => {
         permissions: getPermissionIds([
           "ACCESS_ORGANIZATION",
           "VIEW_ORGANIZATION",
-          "ADD_ORGANIZATION",
-          "EDIT_ORGANIZATION",
+          "CREATE_ORGANIZATION",
+          "UPDATE_ORGANIZATION",
           "BLOCK_ORGANIZATION",
           "DELETE_ORGANIZATION",
           "ACCESS_BRANCH",
           "VIEW_BRANCH",
-          "ADD_BRANCH",
-          "EDIT_BRANCH",
-          "BLOCK_BRANCH",
+          "CREATE_BRANCH",
+          "UPDATE_BRANCH",
           "DELETE_BRANCH",
           "ACCESS_ANALYTICS",
+          "VIEW_ANALYTICS",
           "ACCESS_AUDIT",
           "ACCESS_REPORTS",
         ]),
@@ -144,23 +153,31 @@ const seedRBAC = async () => {
         name: "BRANCH_MANAGER",
         permissions: getPermissionIds([
           "ACCESS_ROOMS",
+          "VIEW_ROOM",
           "ACCESS_BOOKINGS",
+          "VIEW_BOOKING",
           "ACCESS_CRM",
+          "VIEW_GUEST",
           "ACCESS_HOUSEKEEPING",
+          "VIEW_TASK",
           "ACCESS_POS",
+          "VIEW_POS_MENU",
           "ACCESS_INVENTORY",
+          "VIEW_INVENTORY_ITEM",
           "ACCESS_HR",
+          "VIEW_EMPLOYEE",
           "ACCESS_FINANCE",
+          "VIEW_EXPENSE",
           "ACCESS_REPORTS",
           "ACCESS_BRANCH_SETTINGS",
+          "VIEW_BRANCH_SETTINGS",
           "ACCESS_BRANCH",
           "VIEW_BRANCH",
-          "ADD_BRANCH",
-          "EDIT_BRANCH",
-          "BLOCK_BRANCH",
+          "CREATE_BRANCH",
+          "UPDATE_BRANCH",
           "DELETE_BRANCH",
           "CREATE_TASK",
-          "ADD_GUEST",
+          "CREATE_GUEST",
         ]),
       },
 
@@ -169,28 +186,40 @@ const seedRBAC = async () => {
         name: "RECEPTIONIST",
         permissions: getPermissionIds([
           "ACCESS_BOOKINGS",
+          "VIEW_BOOKING",
           "ACCESS_CRM",
-          "ADD_GUEST",
+          "VIEW_GUEST",
+          "CREATE_GUEST",
           "ACCESS_ROOMS",
+          "VIEW_ROOM",
         ]),
       },
 
       // ===== ACCOUNTANT =====
       {
         name: "ACCOUNTANT",
-        permissions: getPermissionIds(["ACCESS_FINANCE", "ACCESS_REPORTS"]),
+        permissions: getPermissionIds([
+          "ACCESS_FINANCE",
+          "VIEW_EXPENSE",
+          "ACCESS_REPORTS",
+          "VIEW_ANALYTICS",
+        ]),
       },
 
       // ===== HOUSEKEEPING =====
       {
         name: "HOUSEKEEPING",
-        permissions: getPermissionIds(["ACCESS_HOUSEKEEPING", "CREATE_TASK"]),
+        permissions: getPermissionIds([
+          "ACCESS_HOUSEKEEPING",
+          "VIEW_TASK",
+          "CREATE_TASK",
+        ]),
       },
 
       // ===== HR MANAGER =====
       {
         name: "HR_MANAGER",
-        permissions: getPermissionIds(["ACCESS_HR"]),
+        permissions: getPermissionIds(["ACCESS_HR", "VIEW_EMPLOYEE"]),
       },
 
       // ===== RESTAURANT MANAGER =====
@@ -198,9 +227,9 @@ const seedRBAC = async () => {
         name: "RESTAURANT_MANAGER",
         permissions: getPermissionIds([
           "ACCESS_POS",
+          "VIEW_POS_MENU",
           "CREATE_POS_ORDER",
           "UPDATE_POS_ORDER",
-          "VOID_POS_ORDER",
           "MANAGE_POS_MENU",
         ]),
       },

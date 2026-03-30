@@ -19,7 +19,7 @@ const requirePermission = require("../../middleware/requirePermission.middleware
 router.get(
   "/:branchId",
   requireAuth,
-  requirePermission("ACCESS_BRANCH_SETTINGS"),
+  requirePermission(["ACCESS_BRANCH_SETTINGS", "VIEW_BRANCH_SETTINGS"]),
   branchSettingsController.getSettings
 );
 

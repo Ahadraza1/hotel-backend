@@ -23,7 +23,7 @@ router.post(
 router.get(
   "/",
   requireAuth,
-  requirePermission("VIEW_ROOM"),
+  requirePermission(["ACCESS_ROOMS", "VIEW_ROOM"]),
   roomController.getRooms
 );
 

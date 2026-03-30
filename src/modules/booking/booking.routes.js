@@ -25,14 +25,14 @@ router.post(
 router.get(
   "/",
   requireAuth,
-  requirePermission("VIEW_BOOKING"),
+  requirePermission(["ACCESS_BOOKINGS", "VIEW_BOOKING"]),
   bookingController.getBookings
 );
 
 router.get(
   "/:bookingId",
   requireAuth,
-  requirePermission("VIEW_BOOKING"),
+  requirePermission(["ACCESS_BOOKINGS", "VIEW_BOOKING"]),
   bookingController.getBookingById
 );
 
@@ -99,7 +99,7 @@ router.post(
 router.post(
   "/:bookingId/invoice",
   requireAuth,
-  requirePermission("VIEW_BOOKING"),
+  requirePermission(["ACCESS_BOOKINGS", "VIEW_BOOKING"]),
   auditMiddleware("BOOKING_INVOICE_REQUESTED", "BOOKING", "Generated booking invoice"),
   bookingController.generateBookingInvoice
 );

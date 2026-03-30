@@ -1,4 +1,4 @@
-const Role = require("../modules/rbac/role.model");
+const { resolveUserPermissions } = require("../utils/resolveUserPermissions");
 
 const requirePermission = (permissionName) => {
   return async (req, res, next) => {
@@ -15,27 +15,26 @@ const requirePermission = (permissionName) => {
     }
 
     try {
-      const roleQuery = req.user.roleRef
-        ? { _id: req.user.roleRef }
-        : { normalizedName: role };
-      const roleDoc = await Role.findOne(roleQuery).populate(
-        "permissions",
-        "name key",
+      const { permissions: resolvedPermissions } = await resolveUserPermissions(
+        req.user,
       );
 
-      const userPermissions = Array.isArray(roleDoc?.permissions)
-        ? roleDoc.permissions.map((permission) =>
-            (permission.key || permission.name).trim().toUpperCase(),
-          )
-        : [];
+      req.user.permissions = resolvedPermissions;
 
-      req.user.permissions = userPermissions;
+      const requiredPermissions = Array.isArray(permissionName)
+        ? permissionName
+            .filter((permission) => typeof permission === "string")
+            .map((permission) => permission.trim().toUpperCase())
+            .filter(Boolean)
+        : [permissionName?.trim().toUpperCase()].filter(Boolean);
 
-      const requiredPermission = permissionName?.trim().toUpperCase();
+      const missingPermissions = requiredPermissions.filter(
+        (permission) => !resolvedPermissions.includes(permission),
+      );
 
-      if (!userPermissions.includes(requiredPermission)) {
+      if (missingPermissions.length > 0) {
         return res.status(403).json({
-          message: `Missing permission: ${requiredPermission}`,
+          message: `Missing permission: ${missingPermissions.join(", ")}`,
         });
       }
 

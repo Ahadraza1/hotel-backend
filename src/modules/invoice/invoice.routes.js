@@ -14,7 +14,7 @@ const auditMiddleware = require("../audit/audit.middleware");
 router.get(
   "/",
   requireAuth,
-  requirePermission("ACCESS_FINANCE"),
+  requirePermission(["ACCESS_FINANCE", "VIEW_EXPENSE"]),
   invoiceController.getInvoices
 );
 
@@ -70,7 +70,7 @@ router.delete(
 router.get(
   "/:invoiceId/pdf",
   requireAuth,
-  requirePermission("ACCESS_FINANCE"),
+  requirePermission(["ACCESS_FINANCE", "VIEW_EXPENSE"]),
   invoiceController.getInvoicePDF
 );
 

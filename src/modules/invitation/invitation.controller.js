@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const Invitation = require("./invitation.model");
 const User = require("../user/user.model");
+const Role = require("../rbac/role.model");
 const { sendEmail } = require("../../utils/sendEmail");
 const InvitationAudit = require("./invitationAudit.model");
 const Organization = require("../organization/organization.model");
@@ -322,13 +323,26 @@ exports.acceptInvitation = async (req, res) => {
     }
 
     // ✅ Create User
+    const normalizedRole = normalizeInvitedRole(invitation.role);
+    const roleDoc = await Role.findOne({
+      normalizedName: normalizedRole,
+    })
+      .populate("permissions", "name key")
+      .lean();
+
     const newUser = await User.create({
       name: invitation.name,
       email: invitation.email,
       password,
-      role: normalizeInvitedRole(invitation.role),
+      role: normalizedRole,
+      roleRef: roleDoc?._id || null,
       organizationId: invitation.organizationId,
       branchId: invitation.branchId?.toString(),
+      permissions: Array.isArray(roleDoc?.permissions)
+        ? roleDoc.permissions
+            .map((permission) => permission.key || permission.name)
+            .filter(Boolean)
+        : [],
       isActive: true,
     });
 
@@ -357,7 +371,7 @@ exports.acceptInvitation = async (req, res) => {
       lastName,
       email: invitation.email,
       department,
-      designation: normalizeInvitedRole(invitation.role),
+      designation: normalizedRole,
       salary: invitation.salary || 0, // ✅ THIS IS THE IMPORTANT FIX
       joiningDate: new Date(),
       createdBy: newUser._id,

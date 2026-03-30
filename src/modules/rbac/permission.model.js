@@ -31,7 +31,7 @@ const permissionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-permissionSchema.pre("validate", function (next) {
+permissionSchema.pre("validate", function () {
   if (!this.key && this.name) {
     this.key = this.name;
   }
@@ -43,8 +43,6 @@ permissionSchema.pre("validate", function (next) {
   if (this.module) {
     this.module = this.module.trim().toUpperCase();
   }
-
-  next();
 });
 
 module.exports = mongoose.model("Permission", permissionSchema);

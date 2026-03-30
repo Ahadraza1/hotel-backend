@@ -3,21 +3,11 @@ const Role = require("./role.model");
 const User = require("../user/user.model");
 const mongoose = require("mongoose");
 
-const canManageRoles = (user) =>
-  ["SUPER_ADMIN", "CORPORATE_ADMIN"].includes(user?.role);
+const canManageRoles = (user) => user?.role === "SUPER_ADMIN";
 
 const getRoleAccessFilter = (user) => {
   if (user?.role === "SUPER_ADMIN") {
     return {};
-  }
-
-  if (user?.role === "CORPORATE_ADMIN") {
-    return {
-      $or: [
-        { type: "SYSTEM", normalizedName: { $ne: "SUPER_ADMIN" } },
-        { organizationId: user.organizationId },
-      ],
-    };
   }
 
   return null;
@@ -46,12 +36,6 @@ exports.getRoles = async (req, res) => {
       });
     }
 
-    if (req.user?.role === "CORPORATE_ADMIN" && !req.user.organizationId) {
-      return res.status(403).json({
-        message: "Organization access is required",
-      });
-    }
-
     const filter = getRoleAccessFilter(req.user) || {};
     const roles = await Role.find(filter)
       .populate("permissions", "_id name key module description")
@@ -77,13 +61,6 @@ exports.createRole = async (req, res) => {
       });
     }
 
-    if (req.user?.role === "CORPORATE_ADMIN" && !req.user.organizationId) {
-      return res.status(403).json({
-        success: false,
-        message: "Organization access is required",
-      });
-    }
-
     const name = String(req.body?.name || "").trim();
     const description = String(req.body?.description || "").trim();
 
@@ -95,8 +72,7 @@ exports.createRole = async (req, res) => {
     }
 
     const normalizedName = name.toUpperCase().replace(/\s+/g, "_");
-    const organizationId =
-      req.user?.role === "CORPORATE_ADMIN" ? req.user.organizationId : null;
+    const organizationId = null;
 
     const duplicate = await Role.findOne({
       normalizedName,
@@ -169,13 +145,6 @@ exports.updateRolePermissions = async (req, res) => {
       });
     }
 
-    if (req.user?.role === "CORPORATE_ADMIN" && !req.user.organizationId) {
-      return res.status(403).json({
-        success: false,
-        message: "Organization access is required",
-      });
-    }
-
     const roleQuery = getAccessibleRoleQuery(req.user, roleId);
     const role = roleQuery ? await Role.findOne(roleQuery) : null;
 
@@ -240,12 +209,37 @@ exports.updateRolePermissions = async (req, res) => {
       });
     }
 
-    role.permissions = permissionDocs.map((permission) => permission._id);
-    await role.save();
+    const nextPermissionIds = permissionDocs.map((permission) => permission._id);
+    const nextPermissionKeys = permissionDocs
+      .map((permission) => permission.key || permission.name)
+      .filter(Boolean);
 
-    const updatedRole = await Role.findById(role._id).populate(
+    const updatedRole = await Role.findByIdAndUpdate(
+      role._id,
+      {
+        $set: {
+          permissions: nextPermissionIds,
+        },
+      },
+      {
+        new: true,
+      },
+    ).populate(
       "permissions",
       "_id name key module description",
+    );
+
+    await User.updateMany(
+      {
+        $or: [{ roleRef: role._id }, { role: role.normalizedName }],
+      },
+      {
+        $set: {
+          permissions: nextPermissionKeys,
+          roleRef: role._id,
+          role: role.normalizedName,
+        },
+      },
     );
 
     return res.status(200).json({
@@ -254,9 +248,20 @@ exports.updateRolePermissions = async (req, res) => {
       data: updatedRole,
     });
   } catch (error) {
+    console.error("Failed to update role permissions", {
+      roleId: req.params?.roleId,
+      error: error?.message,
+      stack: error?.stack,
+    });
+
+    const message =
+      error?.name === "ValidationError" || error?.name === "CastError"
+        ? error.message
+        : "Failed to update permissions";
+
     return res.status(500).json({
       success: false,
-      message: "Failed to update permissions",
+      message,
     });
   }
 };
@@ -276,13 +281,6 @@ exports.deleteRole = async (req, res) => {
       return res.status(403).json({
         success: false,
         message: "Access denied",
-      });
-    }
-
-    if (req.user?.role === "CORPORATE_ADMIN" && !req.user.organizationId) {
-      return res.status(403).json({
-        success: false,
-        message: "Organization access is required",
       });
     }
 

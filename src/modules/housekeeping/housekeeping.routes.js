@@ -30,7 +30,7 @@ router.post(
 router.get(
   "/",
   requireAuth,
-  requirePermission("ACCESS_HOUSEKEEPING"),
+  requirePermission(["ACCESS_HOUSEKEEPING", "VIEW_TASK"]),
   housekeepingController.getTasks
 );
 

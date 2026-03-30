@@ -30,7 +30,7 @@ router.post(
 router.get(
   "/guests",
   requireAuth,
-  requirePermission("ACCESS_CRM"),
+  requirePermission(["ACCESS_CRM", "VIEW_GUEST"]),
   guestController.getGuests
 );
 
@@ -85,7 +85,7 @@ router.patch(
 router.get(
   "/guests/:guestId/profile",
   requireAuth,
-  requirePermission("ACCESS_CRM"),
+  requirePermission(["ACCESS_CRM", "VIEW_GUEST"]),
   guestController.getGuestProfile
 );
 

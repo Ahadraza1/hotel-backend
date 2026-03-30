@@ -32,7 +32,7 @@ router.post(
 router.get(
   "/staff",
   requireAuth,
-  requirePermission("ACCESS_HR"),
+  requirePermission(["ACCESS_HR", "VIEW_EMPLOYEE"]),
   hrController.getStaff
 );
 
@@ -96,7 +96,7 @@ router.post(
 router.get(
   "/payroll",
   requireAuth,
-  requirePermission("ACCESS_HR"),
+  requirePermission(["ACCESS_HR", "VIEW_EMPLOYEE"]),
   hrController.getPayroll
 );
 

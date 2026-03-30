@@ -1,7 +1,10 @@
+const mongoose = require("mongoose");
 const Permission = require("./permission.model");
+const Role = require("./role.model");
 
-const canManagePermissions = (user) =>
-  ["SUPER_ADMIN", "CORPORATE_ADMIN"].includes(user?.role);
+const canManagePermissions = (user) => user?.role === "SUPER_ADMIN";
+
+const normalizeToken = (value) => String(value || "").trim().toUpperCase();
 
 /*
   Get Permissions
@@ -11,12 +14,6 @@ exports.getPermissions = async (req, res) => {
     if (!canManagePermissions(req.user)) {
       return res.status(403).json({
         message: "Access denied",
-      });
-    }
-
-    if (req.user?.role === "CORPORATE_ADMIN" && !req.user.organizationId) {
-      return res.status(403).json({
-        message: "Organization access is required",
       });
     }
 
@@ -65,9 +62,11 @@ exports.createPermission = async (req, res) => {
       });
     }
 
-    const name = String(req.body?.name || "").trim();
-    const key = String(req.body?.key || "").trim().toUpperCase();
-    const module = String(req.body?.module || "").trim().toUpperCase();
+    const rawName = String(req.body?.name || "").trim();
+    const name = rawName;
+    const normalizedName = normalizeToken(rawName);
+    const key = normalizeToken(req.body?.key);
+    const module = normalizeToken(req.body?.module);
     const description = String(req.body?.description || "").trim();
 
     if (!name || !key || !module) {
@@ -78,13 +77,16 @@ exports.createPermission = async (req, res) => {
     }
 
     const existingPermission = await Permission.findOne({
-      $or: [{ key }, { name: key }],
+      $or: [{ key }, { key: normalizedName }, { name }, { name: rawName }],
     }).lean();
 
     if (existingPermission) {
       return res.status(409).json({
         success: false,
-        message: "Permission key already exists",
+        message:
+          existingPermission.key === key
+            ? "Permission key already exists"
+            : "Permission name already exists",
       });
     }
 
@@ -108,9 +110,74 @@ exports.createPermission = async (req, res) => {
       });
     }
 
+    if (error?.name === "ValidationError" || error?.name === "CastError") {
+      return res.status(400).json({
+        success: false,
+        message: error.message || "Invalid permission payload",
+      });
+    }
+
+    console.error("Failed to create permission", {
+      body: req.body,
+      error: error?.message,
+      stack: error?.stack,
+    });
+
     return res.status(500).json({
       success: false,
       message: "Failed to create permission",
+    });
+  }
+};
+
+exports.deletePermission = async (req, res) => {
+  try {
+    if (!canManagePermissions(req.user)) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied",
+      });
+    }
+
+    const { permissionId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(permissionId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid permissionId",
+      });
+    }
+
+    const permission = await Permission.findById(permissionId);
+
+    if (!permission) {
+      return res.status(404).json({
+        success: false,
+        message: "Permission not found",
+      });
+    }
+
+    await Role.updateMany(
+      { permissions: permission._id },
+      { $pull: { permissions: permission._id } },
+    );
+
+    await Permission.findByIdAndDelete(permission._id);
+
+    return res.status(200).json({
+      success: true,
+      message: "Permission deleted successfully",
+    });
+  } catch (error) {
+    console.error("Failed to delete permission", {
+      permissionId: req.params?.permissionId,
+      error: error?.message,
+      stack: error?.stack,
+    });
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to delete permission",
     });
   }
 };

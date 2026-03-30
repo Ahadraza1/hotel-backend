@@ -52,7 +52,7 @@ router.post(
 router.get(
   "/",
   requireAuth,
-  requirePermission("ACCESS_INVENTORY"),
+  requirePermission(["ACCESS_INVENTORY", "VIEW_INVENTORY_ITEM"]),
   inventoryController.getInventory
 );
 
@@ -63,7 +63,7 @@ router.get(
 router.get(
   "/summary",
   requireAuth,
-  requirePermission("ACCESS_INVENTORY"),
+  requirePermission(["ACCESS_INVENTORY", "VIEW_INVENTORY_ITEM"]),
   inventoryController.getInventorySummary
 );
 

@@ -22,7 +22,7 @@ router.post(
 router.get(
   "/categories",
   requireAuth,
-  requirePermission("ACCESS_POS"),
+  requirePermission(["ACCESS_POS", "VIEW_POS_MENU"]),
   posController.getCategories
 );
 
@@ -56,7 +56,7 @@ router.post(
 router.get(
   "/items",
   requireAuth,
-  requirePermission("ACCESS_POS"),
+  requirePermission(["ACCESS_POS", "VIEW_POS_MENU"]),
   posController.getItems
 );
 
@@ -90,7 +90,7 @@ router.post(
 router.get(
   "/tables",
   requireAuth,
-  requirePermission("ACCESS_POS"),
+  requirePermission(["ACCESS_POS", "VIEW_POS_MENU"]),
   posController.getTables
 );
 
@@ -150,7 +150,7 @@ router.patch(
 router.get(
   "/kitchen",
   requireAuth,
-  requirePermission("ACCESS_POS"),
+  requirePermission(["ACCESS_POS", "VIEW_POS_MENU"]),
   posController.getKitchenOrders
 );
 

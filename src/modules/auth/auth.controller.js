@@ -16,6 +16,9 @@ const OrganizationSubscription = require("../subscription/organizationSubscripti
 const SubscriptionPayment = require("../subscription/subscriptionPayment.model");
 const subscriptionService = require("../subscription/subscription.service");
 const {
+  resolveUserPermissions,
+} = require("../../utils/resolveUserPermissions");
+const {
   assertUserWorkspaceIsActive,
   ensureActiveBranch,
   ensureActiveOrganization,
@@ -60,27 +63,17 @@ const getDepartmentFromRole = (role) => {
 };
 
 const normalizePlanCode = (value) =>
-  PLAN_ALIASES[String(value || "").trim().toUpperCase()] || "STARTER";
-
-const getRolePermissionsForUser = async (user) => {
-  const roleQuery = user?.roleRef
-    ? { _id: user.roleRef }
-    : {
-        normalizedName: String(user?.role || "")
-          .trim()
-          .toUpperCase()
-          .replace(/\s+/g, "_"),
-      };
-  const roleData = await Role.findOne(roleQuery).populate("permissions");
-
-  return roleData
-    ? roleData.permissions.map((permission) => permission.key || permission.name)
-    : [];
-};
+  PLAN_ALIASES[
+    String(value || "")
+      .trim()
+      .toUpperCase()
+  ] || "STARTER";
 
 const sanitizeSignupPayload = (payload = {}) => {
   const organizationName = String(payload.organizationName || "").trim();
-  const businessType = String(payload.businessType || "").trim().toUpperCase();
+  const businessType = String(payload.businessType || "")
+    .trim()
+    .toUpperCase();
   const country = String(payload.country || "").trim();
   const state = String(payload.state || "").trim();
   const city = String(payload.city || "").trim();
@@ -88,7 +81,9 @@ const sanitizeSignupPayload = (payload = {}) => {
   const taxId = String(payload.taxId || "").trim();
   const contactPhone = String(payload.contactPhone || "").trim();
   const adminFullName = String(payload.adminFullName || "").trim();
-  const adminEmail = String(payload.adminEmail || "").trim().toLowerCase();
+  const adminEmail = String(payload.adminEmail || "")
+    .trim()
+    .toLowerCase();
   const adminPhone = String(payload.adminPhone || "").trim();
   const password = String(payload.password || "");
   const selectedPlanId = String(payload.selectedPlanId || "").trim();
@@ -165,8 +160,7 @@ const reserveSystemIdentifier = async (organizationName) => {
 
     const existing = await Organization.findOne({
       systemIdentifier: candidate,
-    })
-      .lean();
+    }).lean();
 
     if (!existing) {
       return candidate;
@@ -474,17 +468,10 @@ exports.createSignupCheckoutOrder = async (req, res) => {
 exports.verifySignupCheckout = async (req, res) => {
   try {
     const signupPayload = sanitizeSignupPayload(req.body);
-    const {
-      razorpay_order_id,
-      razorpay_payment_id,
-      razorpay_signature,
-    } = req.body;
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } =
+      req.body;
 
-    if (
-      !razorpay_order_id ||
-      !razorpay_payment_id ||
-      !razorpay_signature
-    ) {
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
       return res.status(400).json({
         message: "Incomplete payment verification payload",
       });
@@ -581,15 +568,49 @@ exports.login = async (req, res) => {
       return res.status(403).json({ message: workspaceError.message });
     }
 
-    const permissions = await getRolePermissionsForUser(user);
+    const { permissions, roleDoc } = await resolveUserPermissions(user);
     const subscriptionAccess = await getSubscriptionAccessForUser(user);
+
+    console.log("LOGIN ROLE DATA", {
+      userId: user._id?.toString(),
+      email: user.email,
+      role: user.role,
+      roleRef: user.roleRef || null,
+      roleData: roleDoc
+        ? {
+            id: roleDoc._id?.toString(),
+            name: roleDoc.name,
+            normalizedName: roleDoc.normalizedName,
+            permissionCount: Array.isArray(roleDoc.permissions)
+              ? roleDoc.permissions.length
+              : 0,
+          }
+        : null,
+    });
+
+    console.log("LOGIN PERMISSIONS", {
+      userId: user._id?.toString(),
+      email: user.email,
+      role: user.role,
+      roleRef: user.roleRef || roleDoc?._id || null,
+      permissions,
+      permissionCount: permissions.length,
+    });
+
+    if (permissions.length === 0) {
+      console.warn("LOGIN PERMISSIONS EMPTY", {
+        userId: user._id?.toString(),
+        email: user.email,
+        role: user.role,
+      });
+    }
 
     const payload = {
       id: user._id,
       userId: user._id,
       role: user.role,
       permissions,
-      roleRef: user.roleRef || null,
+      roleRef: user.roleRef || roleDoc?._id || null,
       organizationId: user.organizationId,
       branchId: user.branchId,
       isPlatformAdmin: user.isPlatformAdmin,
@@ -623,6 +644,7 @@ exports.login = async (req, res) => {
         email: user.email,
         role: user.role,
         permissions,
+        roleRef: user.roleRef || roleDoc?._id || null,
         organizationId: user.organizationId,
         branchId: user.branchId,
         isPlatformAdmin: user.isPlatformAdmin,
@@ -666,7 +688,10 @@ exports.acceptInvite = async (req, res) => {
       ? await ensureActiveBranch(invite.branchId)
       : null;
 
-    if ((invite.organizationId && !activeOrganization) || (invite.branchId && !activeBranch)) {
+    if (
+      (invite.organizationId && !activeOrganization) ||
+      (invite.branchId && !activeBranch)
+    ) {
       return res.status(400).json({
         message: "Invitation is no longer valid",
       });
@@ -681,13 +706,29 @@ exports.acceptInvite = async (req, res) => {
       });
     }
 
+    const roleDoc = await Role.findOne({
+      normalizedName: normalizedRole,
+    }).populate("permissions", "name key");
+
+    if (!roleDoc) {
+      return res.status(400).json({
+        message: `Role not found: ${normalizedRole}`,
+      });
+    }
+
     const user = new User({
       name: invite.name,
       email: invite.email,
       password,
       role: normalizedRole,
+      roleRef: roleDoc._id,
       organizationId: invite.organizationId || null,
       branchId: invite.branchId || null,
+      permissions: Array.isArray(roleDoc?.permissions)
+        ? roleDoc.permissions
+            .map((permission) => permission.key || permission.name)
+            .filter(Boolean)
+        : [],
       isActive: true,
     });
 
@@ -738,7 +779,13 @@ exports.acceptInvite = async (req, res) => {
 */
 exports.getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id);
+    const user = await User.findById(req.user._id).populate({
+      path: "roleRef",
+      populate: {
+        path: "permissions",
+        select: "name key",
+      },
+    });
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
@@ -750,8 +797,32 @@ exports.getMe = async (req, res) => {
       return res.status(403).json({ message: workspaceError.message });
     }
 
-    const permissions = await getRolePermissionsForUser(user);
+    const { permissions, roleDoc } = await resolveUserPermissions(user);
     const subscriptionAccess = await getSubscriptionAccessForUser(user);
+
+    console.log("AUTH ME ROLE DATA", {
+      userId: user._id?.toString(),
+      email: user.email,
+      role: user.role,
+      roleRef: user.roleRef || null,
+      roleData: roleDoc
+        ? {
+            id: roleDoc._id?.toString(),
+            name: roleDoc.name,
+            normalizedName: roleDoc.normalizedName,
+            permissionCount: Array.isArray(roleDoc.permissions)
+              ? roleDoc.permissions.length
+              : 0,
+          }
+        : null,
+    });
+
+    console.log("AUTH ME PERMISSIONS", {
+      userId: user._id?.toString(),
+      email: user.email,
+      permissions,
+      permissionCount: permissions.length,
+    });
 
     res.json({
       id: user._id,
@@ -759,6 +830,7 @@ exports.getMe = async (req, res) => {
       email: user.email,
       role: user.role,
       permissions,
+      roleRef: user.roleRef || roleDoc?._id || null,
       avatar: user.avatar || null,
       organizationId: user.organizationId || null,
       branchId: user.branchId || null,
