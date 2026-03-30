@@ -31,12 +31,14 @@ const invitationRoutes = require("./modules/invitation/invitation.routes");
 const branchSettingsRoutes = require("./modules/branchSettings/branchSettings.routes");
 const subscriptionRoutes = require("./modules/subscription/subscription.routes");
 const subscriptionController = require("./modules/subscription/subscription.controller");
+const contactRoutes = require("./modules/contact/contact.routes");
 
 
 // ✅ Serve uploaded files
 router.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 
 router.get("/public/subscription-plans", subscriptionController.getPublicPlans);
+router.use("/contact", contactRoutes);
 router.use("/auth", authRoutes);
 router.use("/organizations", organizationRoutes);
 router.use("/branches", branchRoutes);
