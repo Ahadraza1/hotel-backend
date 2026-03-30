@@ -74,6 +74,7 @@ const staffSchema = new mongoose.Schema(
     salary: {
       type: Number,
       required: true,
+      default: 0,
     },
 
     overtimeRatePerHour: {
@@ -104,6 +105,7 @@ const staffSchema = new mongoose.Schema(
     joiningDate: {
       type: Date,
       required: true,
+      default: Date.now,
     },
 
     isActive: {

@@ -20,6 +20,22 @@ const normalizeInvitedRole = (role) => {
   return legacyRoleMap[role] || role;
 };
 
+const getDepartmentFromRole = (role) => {
+  const normalizedRole = normalizeInvitedRole(role);
+
+  const roleDepartmentMap = {
+    RECEPTIONIST: "FRONT_OFFICE",
+    HOUSEKEEPING: "HOUSEKEEPING",
+    ACCOUNTANT: "FINANCE",
+    HR_MANAGER: "HR",
+    RESTAURANT_MANAGER: "RESTAURANT",
+    BRANCH_MANAGER: "MANAGEMENT",
+    CHEF: "RESTAURANT",
+  };
+
+  return roleDepartmentMap[normalizedRole] || "MANAGEMENT";
+};
+
 // Helper: Check role permission
 const canInviteRole = (inviterRole, targetRole) => {
   if (inviterRole === "SUPER_ADMIN") return true;
@@ -45,8 +61,9 @@ const canInviteRole = (inviterRole, targetRole) => {
 exports.createInvitation = async (req, res) => {
   try {
     const { name, email, role, salary } = req.body;
+    const Staff = require("../hr/staff.model");
 
-    if (!name || !email || !role || !salary) {
+    if (!name || !email || !role) {
       return res.status(400).json({ message: "All fields are required" });
     }
 
@@ -138,7 +155,7 @@ exports.createInvitation = async (req, res) => {
       name,
       email,
       role,
-      salary,
+      salary: Number.isFinite(Number(salary)) ? Number(salary) : 0,
       organizationId,
       branchId,
       invitedBy: inviter._id,
@@ -158,6 +175,48 @@ exports.createInvitation = async (req, res) => {
     if (branchId) {
       branch = await Branch.findById(branchId);
       // branch = await Branch.findById(branchId);
+    }
+
+    if (branchId) {
+      const normalizedEmail = email.trim().toLowerCase();
+      const normalizedRole = normalizeInvitedRole(role);
+      const nameParts = name.trim().split(/\s+/);
+      const firstName = nameParts[0] || name;
+      const lastName = nameParts.slice(1).join(" ");
+      const salaryValue = Number.isFinite(Number(salary)) ? Number(salary) : 0;
+
+      const existingStaff = await Staff.findOne({
+        email: normalizedEmail,
+        branchId: branchId.toString(),
+      });
+
+      if (!existingStaff) {
+        await Staff.create({
+          organizationId: organizationId?.toString(),
+          branchId: branchId.toString(),
+          firstName,
+          lastName,
+          email: normalizedEmail,
+          department: getDepartmentFromRole(role),
+          designation: normalizedRole,
+          salary: salaryValue,
+          joiningDate: req.body.joinedDate || new Date(),
+          createdBy: inviter._id,
+        });
+      } else {
+        existingStaff.organizationId = organizationId?.toString();
+        existingStaff.branchId = branchId.toString();
+        existingStaff.firstName = firstName;
+        existingStaff.lastName = lastName;
+        existingStaff.department = getDepartmentFromRole(role);
+        existingStaff.designation = normalizedRole;
+        existingStaff.salary = salaryValue;
+        existingStaff.isActive = true;
+        if (!existingStaff.joiningDate) {
+          existingStaff.joiningDate = req.body.joinedDate || new Date();
+        }
+        await existingStaff.save();
+      }
     }
 
     // 7️⃣ Send Email
@@ -352,30 +411,41 @@ exports.acceptInvitation = async (req, res) => {
     const nameParts = invitation.name.split(" ");
     const firstName = nameParts[0];
     const lastName = nameParts.slice(1).join(" ") || "";
-
-    const roleDepartmentMap = {
-      RECEPTIONIST: "FRONT_OFFICE",
-      HOUSEKEEPING: "HOUSEKEEPING",
-      ACCOUNTANT: "FINANCE",
-      HR_MANAGER: "HR",
-      RESTAURANT_MANAGER: "RESTAURANT",
-      BRANCH_MANAGER: "MANAGEMENT",
-    };
-
-    const department = roleDepartmentMap[invitation.role] || "MANAGEMENT";
-
-    await Staff.create({
-      organizationId: invitation.organizationId?.toString(),
-      branchId: invitation.branchId  ,
-      firstName,
-      lastName,
-      email: invitation.email,
-      department,
-      designation: normalizedRole,
-      salary: invitation.salary || 0, // ✅ THIS IS THE IMPORTANT FIX
-      joiningDate: new Date(),
-      createdBy: newUser._id,
+    const existingStaff = await Staff.findOne({
+      email: invitation.email?.trim().toLowerCase(),
+      branchId: invitation.branchId?.toString(),
     });
+
+    if (!existingStaff) {
+      await Staff.create({
+        organizationId: invitation.organizationId?.toString(),
+        branchId: invitation.branchId?.toString(),
+        firstName,
+        lastName,
+        email: invitation.email?.trim().toLowerCase(),
+        department: getDepartmentFromRole(invitation.role),
+        designation: normalizedRole,
+        salary: Number.isFinite(Number(invitation.salary))
+          ? Number(invitation.salary)
+          : 0,
+        joiningDate: new Date(),
+        createdBy: newUser._id,
+      });
+    } else {
+      existingStaff.organizationId = invitation.organizationId?.toString();
+      existingStaff.branchId = invitation.branchId?.toString();
+      existingStaff.firstName = firstName;
+      existingStaff.lastName = lastName;
+      existingStaff.email = invitation.email?.trim().toLowerCase();
+      existingStaff.department = getDepartmentFromRole(invitation.role);
+      existingStaff.designation = normalizedRole;
+      existingStaff.salary = Number.isFinite(Number(invitation.salary))
+        ? Number(invitation.salary)
+        : 0;
+      existingStaff.createdBy = newUser._id;
+      existingStaff.isActive = true;
+      await existingStaff.save();
+    }
 
     invitation.status = "accepted";
     await invitation.save();

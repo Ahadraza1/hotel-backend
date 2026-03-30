@@ -73,6 +73,11 @@ const normalizeName = (value = "") =>
     .toLowerCase()
     .replace(/\s+/g, " ");
 
+const normalizeSalary = (salary) => {
+  const parsedSalary = Number(salary);
+  return Number.isFinite(parsedSalary) ? parsedSalary : 0;
+};
+
 const findLinkedStaffForUser = async (user, branchId) => {
   if (!user?._id && !user?.email && !user?.name) {
     return null;
@@ -175,11 +180,37 @@ exports.createStaff = async (data, user) => {
     throw new Error("Branch not found");
   }
 
+  const firstName = data.firstName?.trim();
+  const lastName = data.lastName?.trim() || "";
+
+  if (!firstName) {
+    const error = new Error("First name is required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const staffPayload = {
+    firstName,
+    lastName,
+    email: data.email?.trim()?.toLowerCase(),
+    phone: data.phone?.trim(),
+    department: data.department?.trim() || "MANAGEMENT",
+    designation: data.designation?.trim() || data.role?.trim() || "STAFF",
+    employmentType: data.employmentType,
+    salary: normalizeSalary(data.salary),
+    overtimeRatePerHour: data.overtimeRatePerHour,
+    shiftStart: data.shiftStart,
+    shiftEnd: data.shiftEnd,
+    leaveBalance: data.leaveBalance,
+    performanceRating: data.performanceRating,
+    joiningDate: data.joiningDate || new Date(),
+    organizationId: branch.organizationId?.toString(),
+    branchId: branch._id.toString(),
+    createdBy: user.id || user.userId || user._id,
+  };
+
   const staff = await Staff.create({
-    ...data,
-    organizationId: branch.organizationId,
-    branchId: branch._id,
-    createdBy:user.id || user.userId,
+    ...staffPayload,
   });
 
   await notificationService.createNotificationSafely({
@@ -227,7 +258,9 @@ exports.getStaff = async (user, branchId) => {
   const staff = await Staff.find({
     branchId: branchFilter,
     isActive: true,
-  });
+  }).select(
+    "staffId firstName lastName department designation salary email branchId organizationId createdBy",
+  );
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -317,7 +350,7 @@ exports.getStaff = async (user, branchId) => {
       email: staffMember.email,
     }));
 
-  return [...userRows, ...standaloneStaffRows].sort((a, b) => 0); // keep order stable
+  return [...userRows, ...standaloneStaffRows];
 };
 
 exports.updateStaff = async (staffId, data, user) => {
