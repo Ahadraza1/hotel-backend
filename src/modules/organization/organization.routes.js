@@ -27,7 +27,6 @@ router.post(
 router.get(
   "/",
   requireAuth,
-  requireSuperAdmin,
   organizationController.getAllOrganizations
 );
 

@@ -55,7 +55,7 @@ router.get(
 router.put(
   "/:branchId",
   requireAuth,
-  requirePermission("CREATE_BRANCH"),
+  requirePermission("UPDATE_BRANCH"),
   auditMiddleware("UPDATE_BRANCH", "BRANCH", "Updated branch"),
   branchController.updateBranch
 );

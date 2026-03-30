@@ -49,6 +49,24 @@ const normalizeInvitedRole = (role) => {
   return legacyRoleMap[role] || role;
 };
 
+const findRoleForInvite = async (normalizedRole) => {
+  const roleNameWithSpaces = normalizedRole.replace(/_/g, " ");
+  const roleNameRegex = new RegExp(
+    `^${roleNameWithSpaces.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+    "i",
+  );
+
+  return Role.findOne({
+    $or: [
+      { normalizedName: normalizedRole },
+      { normalizedName: roleNameWithSpaces.toUpperCase().replace(/\s+/g, "_") },
+      { name: normalizedRole },
+      { name: roleNameWithSpaces },
+      { name: roleNameRegex },
+    ],
+  }).populate("permissions", "name key");
+};
+
 const getDepartmentFromRole = (role) => {
   const roleDepartmentMap = {
     RECEPTIONIST: "FRONT_OFFICE",
@@ -706,9 +724,7 @@ exports.acceptInvite = async (req, res) => {
       });
     }
 
-    const roleDoc = await Role.findOne({
-      normalizedName: normalizedRole,
-    }).populate("permissions", "name key");
+    const roleDoc = await findRoleForInvite(normalizedRole);
 
     if (!roleDoc) {
       return res.status(400).json({

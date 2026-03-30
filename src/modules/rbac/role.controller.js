@@ -5,6 +5,16 @@ const mongoose = require("mongoose");
 
 const canManageRoles = (user) => user?.role === "SUPER_ADMIN";
 
+const canViewRoles = (user) => {
+  if (user?.role === "SUPER_ADMIN" || user?.role === "CORPORATE_ADMIN") {
+    return true;
+  }
+
+  const permissions = Array.isArray(user?.permissions) ? user.permissions : [];
+
+  return permissions.includes("VIEW_USER") || permissions.includes("ACCESS_USERS");
+};
+
 const getRoleAccessFilter = (user) => {
   if (user?.role === "SUPER_ADMIN") {
     return {};
@@ -30,7 +40,7 @@ const getAccessibleRoleQuery = (user, roleId) => {
 */
 exports.getRoles = async (req, res) => {
   try {
-    if (!canManageRoles(req.user)) {
+    if (!canViewRoles(req.user)) {
       return res.status(403).json({
         message: "Access denied",
       });

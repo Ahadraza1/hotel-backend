@@ -11,7 +11,6 @@ const requireSuperAdmin = require("../../middleware/requireSuperAdmin.middleware
 router.get(
   "/",
   requireAuth,
-  requireSuperAdmin,
   roleController.getRoles,
 );
 

@@ -12,6 +12,24 @@ const requireBranchAccess = (req, res, next) => {
       return next();
     }
 
+    const requestBranchId =
+      req.params?.branchId || req.headers["x-branch-id"] || req.user.branchId;
+
+    if (userRole === "CORPORATE_ADMIN") {
+      const branch = await ensureActiveBranch(requestBranchId);
+
+      if (
+        !branch ||
+        String(branch.organizationId) !== String(req.user.organizationId)
+      ) {
+        return res.status(403).json({ message: "Branch access denied" });
+      }
+
+      req.branchId = requestBranchId;
+      req.branch = branch;
+      return next();
+    }
+
     const headerBranchId = req.headers["x-branch-id"];
     const userBranchId = req.user.branchId;
 

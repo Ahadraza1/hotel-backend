@@ -218,13 +218,17 @@ exports.getBranchById = async (req, res) => {
   try {
     const { branchId } = req.params;
 
-    const branch = await branchService.getBranchById(branchId, req.user);
+    const { branch, branchManager } = await branchService.getBranchById(
+      branchId,
+      req.user,
+    );
     const financialSettings =
       await branchSettingsService.getFinancialSettingsByBranchId(branch._id);
 
     res.status(200).json({
       data: {
         ...branch.toObject(),
+        branchManager,
         financialSettings,
       },
     });

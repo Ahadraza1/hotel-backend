@@ -8,6 +8,49 @@ const { sendEmail } = require("../../utils/sendEmail");
 const mongoose = require("mongoose");
 const subscriptionService = require("../subscription/subscription.service");
 
+const getBranchManagerRecord = async (branch) => {
+  const branchId = branch._id.toString();
+
+  const managerUser = await User.findOne({
+    branchId,
+    role: "BRANCH_MANAGER",
+    isDeleted: { $ne: true },
+  })
+    .select("_id name email phone")
+    .lean();
+
+  if (managerUser) {
+    return {
+      source: "user",
+      _id: managerUser._id,
+      name: managerUser.name || "",
+      email: managerUser.email || "",
+      phone: managerUser.phone || "",
+    };
+  }
+
+  const pendingInvitation = await Invitation.findOne({
+    branchId,
+    role: "BRANCH_MANAGER",
+    status: "pending",
+  })
+    .sort({ createdAt: -1 })
+    .select("_id name email")
+    .lean();
+
+  if (pendingInvitation) {
+    return {
+      source: "invitation",
+      _id: pendingInvitation._id,
+      name: pendingInvitation.name || "",
+      email: pendingInvitation.email || "",
+      phone: "",
+    };
+  }
+
+  return null;
+};
+
 /*
   Create Branch + Invite Manager
 */
@@ -247,7 +290,11 @@ exports.getBranchById = async (branchId, user) => {
   SUPER ADMIN
   */
   if (role === "SUPER_ADMIN") {
-    return branch;
+    const branchManager = await getBranchManagerRecord(branch);
+    return {
+      branch,
+      branchManager,
+    };
   }
 
   /*
@@ -257,7 +304,11 @@ exports.getBranchById = async (branchId, user) => {
     role === "CORPORATE_ADMIN" &&
     branch.organizationId?.toString() === user.organizationId?.toString()
   ) {
-    return branch;
+    const branchManager = await getBranchManagerRecord(branch);
+    return {
+      branch,
+      branchManager,
+    };
   }
 
   /*
@@ -280,7 +331,11 @@ exports.getBranchById = async (branchId, user) => {
     const userBranchId = user.branchId || user.branch || user.branch_id;
 
     if (userBranchId && userBranchId.toString() === branch._id.toString()) {
-      return branch;
+      const branchManager = await getBranchManagerRecord(branch);
+      return {
+        branch,
+        branchManager,
+      };
     }
   }
 
@@ -297,18 +352,72 @@ exports.updateBranch = async (branchId, data, user) => {
     throw new Error("Branch not found");
   }
 
-  if (user.role === "SUPER_ADMIN") {
-    return await Branch.findByIdAndUpdate(branchId, data, { new: true });
+  const canUpdateBranch =
+    user.role === "SUPER_ADMIN" ||
+    (user.role === "CORPORATE_ADMIN" &&
+      branch.organizationId.toString() === user.organizationId?.toString());
+
+  if (!canUpdateBranch) {
+    throw new Error("Access denied");
   }
 
-  if (
-    user.role === "CORPORATE_ADMIN" &&
-    branch.organizationId.toString() === user.organizationId?.toString()
-  ) {
-    return await Branch.findByIdAndUpdate(branchId, data, { new: true });
+  const { manager, ...branchData } = data;
+
+  const updatedBranch = await Branch.findByIdAndUpdate(branchId, branchData, {
+    new: true,
+  });
+
+  if (manager && typeof manager === "object") {
+    const managerName = String(manager.name || "").trim();
+    const managerEmail = String(manager.email || "")
+      .trim()
+      .toLowerCase();
+    const managerPhone = String(manager.phone || "").trim();
+
+    const existingManager = await User.findOne({
+      branchId: branch._id.toString(),
+      role: "BRANCH_MANAGER",
+      isDeleted: { $ne: true },
+    });
+
+    if (existingManager) {
+      if (
+        managerEmail &&
+        managerEmail !== existingManager.email &&
+        (await User.exists({ email: managerEmail, _id: { $ne: existingManager._id } }))
+      ) {
+        throw new Error("Manager email already exists");
+      }
+
+      existingManager.name = managerName || existingManager.name;
+      existingManager.email = managerEmail || existingManager.email;
+      existingManager.phone = managerPhone;
+      await existingManager.save();
+    } else {
+      const pendingInvitation = await Invitation.findOne({
+        branchId: branch._id.toString(),
+        role: "BRANCH_MANAGER",
+        status: "pending",
+      }).sort({ createdAt: -1 });
+
+      if (pendingInvitation) {
+        if (
+          managerEmail &&
+          managerEmail !== pendingInvitation.email &&
+          (await User.exists({ email: managerEmail }))
+        ) {
+          throw new Error("Manager email already exists");
+        }
+
+        pendingInvitation.name = managerName || pendingInvitation.name;
+        pendingInvitation.email = managerEmail || pendingInvitation.email;
+        await pendingInvitation.save();
+      }
+    }
   }
 
-  throw new Error("Access denied");
+  return updatedBranch;
+
 };
 
 /*
