@@ -94,6 +94,13 @@ router.get(
   posController.getTables
 );
 
+router.get(
+  "/orders",
+  requireAuth,
+  requirePermission(["ACCESS_POS", "VIEW_POS_MENU"]),
+  posController.getOrders
+);
+
 /*
   ===========================
   POS ORDER ROUTES
@@ -129,6 +136,13 @@ router.patch(
   requireAuth,
   requirePermission("ACCESS_POS"),
   posController.completeOrder
+);
+
+router.patch(
+  "/orders/:orderId/status",
+  requireAuth,
+  requirePermission("ACCESS_POS"),
+  posController.updateOrderStatus
 );
 
 /*

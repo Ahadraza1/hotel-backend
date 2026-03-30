@@ -1,14 +1,10 @@
 const Room = require("./room.model");
 const Booking = require("../booking/booking.model");
+const Branch = require("../branch/branch.model");
 
-/*
-  Helper: Permission Check
-*/
 const requirePermission = (user, permission) => {
-  // Platform super admin
   if (user.isPlatformAdmin) return;
 
-  // Workspace roles always allowed
   if (
     user.role === "SUPER_ADMIN" ||
     user.role === "CORPORATE_ADMIN" ||
@@ -17,18 +13,12 @@ const requirePermission = (user, permission) => {
     return;
   }
 
-  // fallback permission system
   if (!user.permissions || !user.permissions.includes(permission)) {
     const error = new Error("Permission denied");
     error.statusCode = 403;
     throw error;
   }
 };
-
-/*
-  Create Room
-*/
-const Branch = require("../branch/branch.model");
 
 exports.createRoom = async (data, user) => {
   requirePermission(user, "CREATE_ROOM");
@@ -78,14 +68,12 @@ exports.createRoom = async (data, user) => {
     throw error;
   }
 
-  // 🔥 Must have active workspace branch
   if (!user.branchId) {
     const error = new Error("No active branch selected");
     error.statusCode = 400;
     throw error;
   }
 
-  // 🔥 Always derive organization from branch
   const branch = await Branch.findById(user.branchId);
 
   if (!branch) {
@@ -94,8 +82,8 @@ exports.createRoom = async (data, user) => {
     throw error;
   }
 
-  const room = await Room.create({
-    organizationId: branch.organizationId, // ✅ derived from branch
+  return Room.create({
+    organizationId: branch.organizationId,
     branchId: branch._id,
     roomNumber,
     roomType,
@@ -110,14 +98,9 @@ exports.createRoom = async (data, user) => {
     bedType,
     createdBy: user._id,
   });
-
-  return room;
 };
 
-/*
-  Get Rooms
-*/
-exports.getRooms = async (user, checkInDate, checkOutDate, totalGuests) => {
+exports.getRooms = async (user, checkInDate, checkOutDate, totalGuests, status) => {
   requirePermission(user, "VIEW_ROOM");
 
   if (!user.branchId) {
@@ -126,14 +109,36 @@ exports.getRooms = async (user, checkInDate, checkOutDate, totalGuests) => {
     throw error;
   }
 
-  // Get all active rooms of branch
+  const normalizedStatus = String(status || "").toUpperCase();
+
+  if (normalizedStatus === "CHECKED_IN") {
+    const checkedInBookings = await Booking.find({
+      branchId: user.branchId,
+      status: "CHECKED_IN",
+      isActive: true,
+    })
+      .populate("roomId")
+      .select("_id bookingId guestName roomId")
+      .lean();
+
+    return checkedInBookings
+      .filter((booking) => booking.roomId && booking.roomId.isActive)
+      .map((booking) => ({
+        ...booking.roomId,
+        _id: booking.roomId._id,
+        currentGuestName: booking.guestName,
+        currentBookingId: booking.bookingId,
+        occupancyStatus: "CHECKED_IN",
+      }));
+  }
+
   const rooms = await Room.find({
     branchId: user.branchId,
     isActive: true,
     ...(totalGuests && { capacity: { $gte: Number(totalGuests) } }),
+    ...(normalizedStatus ? { status: normalizedStatus } : {}),
   });
 
-  // If no dates → return all rooms
   if (!checkInDate || !checkOutDate) {
     return rooms;
   }
@@ -141,7 +146,6 @@ exports.getRooms = async (user, checkInDate, checkOutDate, totalGuests) => {
   const checkIn = new Date(checkInDate);
   const checkOut = new Date(checkOutDate);
 
-  // Find overlapping bookings
   const overlappingBookings = await Booking.find({
     branchId: user.branchId,
     status: { $ne: "CANCELLED" },
@@ -149,19 +153,13 @@ exports.getRooms = async (user, checkInDate, checkOutDate, totalGuests) => {
     checkOutDate: { $gt: checkIn },
   }).select("roomId");
 
-  const bookedRoomIds = overlappingBookings.map((b) => b.roomId.toString());
-
-  // Filter rooms
-  const availableRooms = rooms.filter(
-    (room) => !bookedRoomIds.includes(room._id.toString()),
+  const bookedRoomIds = overlappingBookings.map((booking) =>
+    booking.roomId.toString(),
   );
 
-  return availableRooms;
+  return rooms.filter((room) => !bookedRoomIds.includes(room._id.toString()));
 };
 
-/*
-  Update Room
-*/
 exports.updateRoom = async (roomId, data, user) => {
   requirePermission(user, "UPDATE_ROOM");
 
@@ -180,7 +178,7 @@ exports.updateRoom = async (roomId, data, user) => {
     (user.role === "BRANCH_MANAGER" &&
       room.branchId?.toString() === user.branchId)
   ) {
-    return await Room.findByIdAndUpdate(roomId, data, { new: true });
+    return Room.findByIdAndUpdate(roomId, data, { new: true });
   }
 
   const error = new Error("Access denied");
@@ -188,9 +186,6 @@ exports.updateRoom = async (roomId, data, user) => {
   throw error;
 };
 
-/*
-  Change Room Status
-*/
 exports.changeRoomStatus = async (roomId, status, user) => {
   requirePermission(user, "UPDATE_ROOM");
 
@@ -209,7 +204,7 @@ exports.changeRoomStatus = async (roomId, status, user) => {
     (user.role === "BRANCH_MANAGER" &&
       room.branchId?.toString() === user.branchId)
   ) {
-    return await Room.findByIdAndUpdate(roomId, { status }, { new: true });
+    return Room.findByIdAndUpdate(roomId, { status }, { new: true });
   }
 
   const error = new Error("Access denied");
@@ -217,9 +212,6 @@ exports.changeRoomStatus = async (roomId, status, user) => {
   throw error;
 };
 
-/*
-  Deactivate Room
-*/
 exports.deactivateRoom = async (roomId, user) => {
   requirePermission(user, "UPDATE_ROOM");
 
@@ -238,11 +230,7 @@ exports.deactivateRoom = async (roomId, user) => {
     (user.role === "BRANCH_MANAGER" &&
       room.branchId?.toString() === user.branchId)
   ) {
-    return await Room.findByIdAndUpdate(
-      roomId,
-      { isActive: false },
-      { new: true },
-    );
+    return Room.findByIdAndUpdate(roomId, { isActive: false }, { new: true });
   }
 
   const error = new Error("Access denied");
@@ -250,9 +238,6 @@ exports.deactivateRoom = async (roomId, user) => {
   throw error;
 };
 
-/*
-  Restore Room
-*/
 exports.restoreRoom = async (roomId, user) => {
   requirePermission(user, "UPDATE_ROOM");
 
@@ -270,9 +255,5 @@ exports.restoreRoom = async (roomId, user) => {
     throw error;
   }
 
-  return await Room.findByIdAndUpdate(
-    roomId,
-    { isActive: true },
-    { new: true },
-  );
+  return Room.findByIdAndUpdate(roomId, { isActive: true }, { new: true });
 };

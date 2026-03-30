@@ -22,6 +22,11 @@ const posTableSchema = new mongoose.Schema(
       index: true,
     },
 
+    tableNumber: {
+      type: String,
+      trim: true,
+    },
+
     name: {
       type: String,
       required: true,

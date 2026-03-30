@@ -158,6 +158,33 @@ exports.completeOrder = async (req, res) => {
 
 };
 
+/*
+  UPDATE ORDER STATUS
+*/
+exports.updateOrderStatus = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { status } = req.body;
+
+    const order = await posService.updateOrderStatus(
+      orderId,
+      status,
+      req.user,
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Order status updated",
+      data: order,
+    });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 
 /*
   PAY ORDER
@@ -408,11 +435,30 @@ exports.createTable = async (req, res) => {
 */
 exports.getTables = async (req, res) => {
   try {
-    const tables = await posService.getTables(req.user);
+    const tables = await posService.getTables(req.user, req.query);
 
     res.status(200).json({
       success: true,
       data: tables,
+    });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+/*
+  GET ORDERS
+*/
+exports.getOrders = async (req, res) => {
+  try {
+    const orders = await posService.getOrders(req.user, req.query);
+
+    res.status(200).json({
+      success: true,
+      data: orders,
     });
   } catch (error) {
     res.status(error.statusCode || 400).json({

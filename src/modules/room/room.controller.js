@@ -53,13 +53,14 @@ exports.createRoom = async (req, res) => {
 */
 exports.getRooms = async (req, res) => {
   try {
-    const { checkInDate, checkOutDate, totalGuests } = req.query;
+    const { checkInDate, checkOutDate, totalGuests, status } = req.query;
 
     const rooms = await roomService.getRooms(
       req.user,
       checkInDate,
       checkOutDate,
       totalGuests,
+      status,
     );
 
     return res.status(200).json({

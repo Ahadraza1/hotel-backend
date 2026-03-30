@@ -88,8 +88,22 @@ const posOrderSchema = new mongoose.Schema(
     index: true,
   },
 
+  tableId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "POSTable",
+    default: null,
+    index: true,
+  },
+
   tableNumber: {
     type: String,
+  },
+
+  roomId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Room",
+    default: null,
+    index: true,
   },
 
   bookingId: {
@@ -151,7 +165,15 @@ const posOrderSchema = new mongoose.Schema(
 
   orderStatus: {
     type: String,
-    enum: ["OPEN","IN_PROGRESS","COMPLETED","CANCELLED"],
+    enum: [
+      "OPEN",
+      "PREPARING",
+      "READY",
+      "SERVED",
+      "COMPLETED",
+      "IN_PROGRESS",
+      "CANCELLED",
+    ],
     default: "OPEN",
     index: true,
   },

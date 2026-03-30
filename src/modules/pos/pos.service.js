@@ -1,18 +1,26 @@
 const POSItem = require("./posItem.model");
 const POSOrder = require("./posOrder.model");
-const StockMovement = require("../inventory/stockMovement.model");
 const Invoice = require("../invoice/invoice.model");
 const { getIO } = require("../../config/socket");
 const POSCategory = require("./posCategory.model");
 const POSTable = require("./posTable.model");
 const Branch = require("../branch/branch.model");
+const Room = require("../room/room.model");
+const Booking = require("../booking/booking.model");
+const MergedInvoice = require("../finance/mergedInvoice.model");
 const branchSettingsService = require("../branchSettings/branchSettings.service");
 const notificationService = require("../notification/notification.service");
 const mongoose = require("mongoose");
 
-/*
-  Permission Helper
-*/
+const ACTIVE_ORDER_STATUSES = [
+  "OPEN",
+  "PREPARING",
+  "READY",
+  "SERVED",
+  "IN_PROGRESS",
+];
+const CLOSING_ORDER_STATUSES = ["COMPLETED", "CANCELLED"];
+
 function requirePermission(user, permission) {
   if (!user) {
     const error = new Error("Unauthorized user");
@@ -20,17 +28,14 @@ function requirePermission(user, permission) {
     throw error;
   }
 
-  // SUPER ADMIN
   if (user.isPlatformAdmin || user.role === "SUPER_ADMIN") {
     return true;
   }
 
-  // CORPORATE ADMIN
   if (user.role === "CORPORATE_ADMIN") {
     return true;
   }
 
-  // BRANCH MANAGER
   if (user.role === "BRANCH_MANAGER") {
     return true;
   }
@@ -44,29 +49,29 @@ function requirePermission(user, permission) {
   return true;
 }
 
-/* ===========================
-   CREATE ORDER
-=========================== */
-exports.createOrder = async (data, user) => {
-  requirePermission(user, "ACCESS_POS");
+const roundCurrency = (value) => Number(Number(value || 0).toFixed(2));
 
-  const {
-    items,
-    orderType,
-    tableNumber,
-    bookingId,
-    discountAmount: incomingDiscountAmount = 0,
-    discountPercentage: incomingDiscountPercentage = 0,
-  } = data;
+const normalizeOrderStatus = (status) => {
+  if (!status) return "OPEN";
 
-  if (!items || items.length === 0) {
-    throw new Error("Order must contain items");
-  }
+  const normalized = String(status).toUpperCase();
+  return normalized === "IN_PROGRESS" ? "PREPARING" : normalized;
+};
 
+const emitOrderUpdate = (eventName, branchId, payload) => {
+  const io = getIO();
+  io.to(`branch_${branchId}`).emit(eventName, payload);
+  io.to(`branch-${branchId}`).emit(eventName, payload);
+};
+
+const resolveOrganizationContext = async (user) => {
   let organizationId = user.organizationId;
   let branchId = user.branchId;
 
-  /* Resolve organization from branch if missing */
+  if (!branchId) {
+    throw new Error("No active branch selected");
+  }
+
   if (!organizationId && branchId) {
     const branch = await Branch.findById(branchId)
       .select("organizationId branchId")
@@ -80,12 +85,203 @@ exports.createOrder = async (data, user) => {
   }
 
   if (!organizationId) {
-    throw new Error("Organization ID missing for POS order");
+    throw new Error("Organization ID missing");
   }
 
-  /* ===========================
-   GENERATE BRANCH PREFIX
-=========================== */
+  return { organizationId, branchId };
+};
+
+const syncTableOccupancy = async (tableId, session = null) => {
+  if (!tableId) return null;
+
+  const existsQuery = POSOrder.exists({
+    tableId,
+    orderStatus: { $in: ACTIVE_ORDER_STATUSES },
+    isActive: true,
+  });
+
+  if (session) {
+    existsQuery.session(session);
+  }
+
+  const activeOrderExists = await existsQuery;
+
+  const updateOptions = session ? { new: true, session } : { new: true };
+
+  return POSTable.findByIdAndUpdate(
+    tableId,
+    { status: activeOrderExists ? "OCCUPIED" : "AVAILABLE" },
+    updateOptions,
+  );
+};
+
+const resolveCheckedInBookingForRoom = async (roomId, branchId, session = null) => {
+  const bookingQuery = Booking.findOne({
+    roomId,
+    branchId,
+    status: "CHECKED_IN",
+    isActive: true,
+  })
+    .sort({ createdAt: -1 })
+    .select(
+      "_id bookingId guestName invoiceId organizationId branchId roomId nights",
+    );
+
+  if (session) {
+    bookingQuery.session(session);
+  }
+
+  return bookingQuery;
+};
+
+const ensureRoomInvoiceExists = async ({ booking, user, session }) => {
+  const invoiceQuery = Invoice.findOne({
+    bookingId: booking._id,
+    referenceType: "BOOKING",
+    isActive: true,
+  });
+
+  if (session) {
+    invoiceQuery.session(session);
+  }
+
+  let invoice = await invoiceQuery;
+
+  if (invoice) {
+    return invoice;
+  }
+
+  const roomQuery = Room.findById(booking.roomId);
+
+  if (session) {
+    roomQuery.session(session);
+  }
+
+  const room = await roomQuery;
+
+  if (!room) {
+    throw new Error("Room not found for checked-in booking");
+  }
+
+  const financialSettings =
+    await branchSettingsService.getFinancialSettingsByBranchId(booking.branchId);
+  const roomCharges = roundCurrency(
+    Number(booking.nights || 0) * Number(room.pricePerNight || 0),
+  );
+  const taxAmount = roundCurrency(
+    (roomCharges * Number(financialSettings.taxPercentage || 0)) / 100,
+  );
+  const finalAmount = roundCurrency(roomCharges + taxAmount);
+
+  const createdInvoices = await Invoice.create(
+    [
+      {
+        organizationId: booking.organizationId,
+        branchId: booking.branchId,
+        bookingId: booking._id,
+        type: "ROOM",
+        referenceType: "BOOKING",
+        referenceId: booking.bookingId,
+        lineItems: [
+          {
+            description: "Room Charges",
+            quantity: booking.nights,
+            unitPrice: room.pricePerNight,
+            total: roomCharges,
+          },
+        ],
+        totalAmount: roomCharges,
+        taxAmount,
+        serviceChargeAmount: 0,
+        discountAmount: 0,
+        finalAmount,
+        paidAmount: 0,
+        dueAmount: finalAmount,
+        status: "UNPAID",
+        createdBy: user._id,
+        updatedBy: user._id,
+      },
+    ],
+    { session },
+  );
+
+  invoice = createdInvoices[0];
+  booking.invoiceId = invoice._id;
+  await booking.save({ session });
+
+  return invoice;
+};
+
+const attachRoomServiceToInvoice = async ({ order, booking, user, session }) => {
+  const invoice = await ensureRoomInvoiceExists({ booking, user, session });
+
+  invoice.lineItems.push({
+    description: `Room Service ${order.orderCode}`,
+    quantity: 1,
+    unitPrice: order.grandTotal,
+    total: order.grandTotal,
+  });
+  invoice.totalAmount = roundCurrency(
+    Number(invoice.totalAmount || 0) + Number(order.grandTotal || 0),
+  );
+  invoice.finalAmount = roundCurrency(
+    Number(invoice.finalAmount || 0) + Number(order.grandTotal || 0),
+  );
+  invoice.dueAmount = roundCurrency(
+    Math.max(Number(invoice.finalAmount || 0) - Number(invoice.paidAmount || 0), 0),
+  );
+  invoice.status =
+    invoice.dueAmount === 0
+      ? "PAID"
+      : Number(invoice.paidAmount || 0) > 0
+        ? "PARTIALLY_PAID"
+        : "UNPAID";
+  invoice.updatedBy = user._id;
+  await invoice.save({ session });
+
+  await MergedInvoice.findOneAndUpdate(
+    { bookingId: booking._id },
+    {
+      $setOnInsert: {
+        organizationId: booking.organizationId,
+        branchId: booking.branchId,
+        bookingId: booking._id,
+        roomInvoiceId: invoice._id,
+        createdBy: user._id,
+      },
+      $addToSet: { posOrderIds: order._id },
+      $inc: { totalAmount: order.grandTotal },
+    },
+    { upsert: true, new: true, session },
+  );
+
+  order.invoiceLinked = true;
+  order.invoiceId = invoice.invoiceId;
+  await order.save({ session });
+
+  return invoice;
+};
+
+exports.createOrder = async (data, user) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const {
+    items,
+    orderType,
+    roomId,
+    tableId,
+    tableNumber,
+    bookingId,
+    status,
+    discountAmount: incomingDiscountAmount = 0,
+    discountPercentage: incomingDiscountPercentage = 0,
+  } = data;
+
+  if (!items || items.length === 0) {
+    throw new Error("Order must contain items");
+  }
+
+  const { organizationId, branchId } = await resolveOrganizationContext(user);
 
   const branch = await Branch.findById(branchId).select("name").lean();
 
@@ -93,17 +289,11 @@ exports.createOrder = async (data, user) => {
     throw new Error("Branch not found");
   }
 
-  /* Example: "New York Hotel" → "NYH" */
-
   const branchPrefix = branch.name
     .split(" ")
     .map((word) => word[0])
     .join("")
     .toUpperCase();
-
-  /* ===========================
-     GENERATE SERIAL ORDER NUMBER
-  ============================ */
 
   const lastOrder = await POSOrder.findOne({ branchId })
     .sort({ orderNumber: -1 })
@@ -111,23 +301,20 @@ exports.createOrder = async (data, user) => {
     .lean();
 
   const nextOrderNumber = lastOrder ? lastOrder.orderNumber + 1 : 1;
-
-  let subTotal = 0;
-
   const financialSettings =
     await branchSettingsService.getFinancialSettingsByBranchId(branchId);
 
+  let subTotal = 0;
   const orderItems = [];
 
-  for (let item of items) {
+  for (const item of items) {
     const menuItem = await POSItem.findOne({ itemId: item.itemId });
 
     if (!menuItem || !menuItem.isAvailable) {
       throw new Error("Item not available");
     }
 
-    const itemTotal = menuItem.price * item.quantity;
-
+    const itemTotal = roundCurrency(Number(menuItem.price || 0) * Number(item.quantity || 0));
     subTotal += itemTotal;
 
     orderItems.push({
@@ -138,72 +325,170 @@ exports.createOrder = async (data, user) => {
       serviceChargePercentageSnapshot: financialSettings.serviceChargePercentage,
       quantity: item.quantity,
       totalItemAmount: itemTotal,
-
       kitchenStatus: "PENDING",
       kitchenStation: menuItem.kitchenStation || "MAIN_KITCHEN",
     });
   }
 
+  const normalizedOrderType = String(orderType || "").toUpperCase();
+
+  if (!["DINE_IN", "ROOM_SERVICE", "TAKEAWAY"].includes(normalizedOrderType)) {
+    throw new Error("Invalid order type");
+  }
+
   const discountAmount = Math.max(Number(incomingDiscountAmount || 0), 0);
-  const discountPercentage = Math.max(
-    Number(incomingDiscountPercentage || 0),
-    0,
-  );
+  const discountPercentage = Math.max(Number(incomingDiscountPercentage || 0), 0);
   const taxableBase = Math.max(subTotal - discountAmount, 0);
-  const totalTax = (taxableBase * financialSettings.taxPercentage) / 100;
-  const totalServiceCharge =
-    (taxableBase * financialSettings.serviceChargePercentage) / 100;
-  const grandTotal = Math.max(
-    taxableBase + totalTax + totalServiceCharge,
-    0,
+  const totalTax = roundCurrency(
+    (taxableBase * Number(financialSettings.taxPercentage || 0)) / 100,
+  );
+  const totalServiceCharge = roundCurrency(
+    (taxableBase * Number(financialSettings.serviceChargePercentage || 0)) / 100,
+  );
+  const grandTotal = roundCurrency(
+    Math.max(taxableBase + totalTax + totalServiceCharge, 0),
   );
 
-  const order = await POSOrder.create({
-    orderNumber: nextOrderNumber,
-    orderCode: `${branchPrefix}-${String(nextOrderNumber).padStart(3, "0")}`,
-    organizationId,
-    branchId,
-    orderType,
-    tableNumber,
-    bookingId,
-    items: orderItems,
-    subTotal,
-    totalTax,
-    totalServiceCharge,
-    discountAmount,
-    discountPercentage,
-    grandTotal,
-    createdBy: user._id,
-  });
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-  /* REALTIME KITCHEN UPDATE */
-  const io = getIO();
-  io.to(`branch_${branchId}`).emit("new-order", order);
+  try {
+    let selectedTable = null;
+    let selectedRoom = null;
+    let activeBooking = null;
 
-  await notificationService.createNotificationSafely({
-    title: "New POS order created",
-    message: `Order ${order.orderCode} was created for branch ${branch.name}.`,
-    type: "pos",
-    organizationId,
-    branchId,
-    module: "POS",
-  });
+    if (normalizedOrderType === "DINE_IN") {
+      const tableQuery = tableId
+        ? { _id: tableId, branchId, isActive: true }
+        : {
+            branchId,
+            isActive: true,
+            $or: [{ tableNumber: tableNumber || null }, { name: tableNumber || null }],
+          };
 
-  return order;
+      selectedTable = await POSTable.findOne(tableQuery).session(session);
+
+      if (!selectedTable) {
+        throw new Error("Selected table not found");
+      }
+
+      const existingActiveOrder = await POSOrder.findOne({
+        tableId: selectedTable._id,
+        orderStatus: { $in: ACTIVE_ORDER_STATUSES },
+        isActive: true,
+      }).session(session);
+
+      if (existingActiveOrder) {
+        throw new Error("Only one active order is allowed per table");
+      }
+    }
+
+    if (normalizedOrderType === "ROOM_SERVICE") {
+      if (!roomId || !mongoose.Types.ObjectId.isValid(roomId)) {
+        throw new Error("Checked-in room selection is required");
+      }
+
+      selectedRoom = await Room.findOne({
+        _id: roomId,
+        branchId,
+        isActive: true,
+      }).session(session);
+
+      if (!selectedRoom) {
+        throw new Error("Selected room not found");
+      }
+
+      activeBooking =
+        (bookingId &&
+          (await Booking.findOne({
+            bookingId,
+            roomId: selectedRoom._id,
+            branchId,
+            status: "CHECKED_IN",
+            isActive: true,
+          }).session(session))) ||
+        (await resolveCheckedInBookingForRoom(selectedRoom._id, branchId, session));
+
+      if (!activeBooking) {
+        throw new Error("Only checked-in rooms can be used for room service");
+      }
+    }
+
+    const createdOrders = await POSOrder.create(
+      [
+        {
+          orderNumber: nextOrderNumber,
+          orderCode: `${branchPrefix}-${String(nextOrderNumber).padStart(3, "0")}`,
+          organizationId,
+          branchId,
+          tableId: selectedTable?._id || null,
+          tableNumber:
+            normalizedOrderType === "DINE_IN"
+              ? selectedTable?.tableNumber || selectedTable?.name || tableNumber
+              : null,
+          roomId: selectedRoom?._id || null,
+          bookingId:
+            normalizedOrderType === "ROOM_SERVICE"
+              ? activeBooking?.bookingId || bookingId || null
+              : bookingId || null,
+          orderType: normalizedOrderType,
+          items: orderItems,
+          subTotal,
+          totalTax,
+          totalServiceCharge,
+          discountAmount,
+          discountPercentage,
+          grandTotal,
+          orderStatus: normalizeOrderStatus(status),
+          createdBy: user._id,
+        },
+      ],
+      { session },
+    );
+
+    const order = createdOrders[0];
+
+    if (selectedTable) {
+      selectedTable.status = "OCCUPIED";
+      await selectedTable.save({ session });
+    }
+
+    if (normalizedOrderType === "ROOM_SERVICE" && activeBooking) {
+      await attachRoomServiceToInvoice({
+        order,
+        booking: activeBooking,
+        user,
+        session,
+      });
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    emitOrderUpdate("new-order", branchId, order);
+
+    await notificationService.createNotificationSafely({
+      title: "New POS order created",
+      message: `Order ${order.orderCode} was created for branch ${branch.name}.`,
+      type: "pos",
+      organizationId,
+      branchId,
+      module: "POS",
+    });
+
+    return order;
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    throw error;
+  }
 };
 
-/* ===========================
-   UPDATE KITCHEN STATUS
-=========================== */
 exports.updateKitchenStatus = async (orderId, itemId, status, user) => {
   requirePermission(user, "ACCESS_POS");
 
-  let order = null;
+  let order = await POSOrder.findOne({ orderId });
 
-  // Try UUID orderId first
-  order = await POSOrder.findOne({ orderId });
-
-  // If not found, try Mongo _id
   if (!order && mongoose.Types.ObjectId.isValid(orderId)) {
     order = await POSOrder.findById(orderId);
   }
@@ -212,53 +497,78 @@ exports.updateKitchenStatus = async (orderId, itemId, status, user) => {
     throw new Error("Order not found");
   }
 
-  if (!order) throw new Error("Order not found");
+  const item = order.items.find((entry) => entry.itemId === itemId);
 
-  const item = order.items.find((i) => i.itemId === itemId);
-
-  if (!item) throw new Error("Item not found in order");
+  if (!item) {
+    throw new Error("Item not found in order");
+  }
 
   item.kitchenStatus = status;
-
   await order.save();
 
-  /* 🔥 Emit Order Update */
-  const io = getIO();
-  io.to(`branch-${order.branchId}`).emit("order-updated", order);
+  emitOrderUpdate("order-updated", order.branchId, order);
 
   return order;
 };
 
-/* ===========================
-   COMPLETE ORDER
-=========================== */
 exports.completeOrder = async (orderId, user) => {
   requirePermission(user, "ACCESS_POS");
 
   const order = await POSOrder.findOne({ orderId });
 
-  if (!order) throw new Error("Order not found");
+  if (!order) {
+    throw new Error("Order not found");
+  }
 
   order.orderStatus = "COMPLETED";
-
   await order.save();
+  await syncTableOccupancy(order.tableId);
 
-  /* 🔥 Emit Order Update */
-  const io = getIO();
-  io.to(`branch-${order.branchId}`).emit("order-updated", order);
+  emitOrderUpdate("order-updated", order.branchId, order);
 
   return order;
 };
 
-/* ===========================
-   PAY ORDER
-=========================== */
+exports.updateOrderStatus = async (orderId, status, user) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const normalizedStatus = normalizeOrderStatus(status);
+  const allowedStatuses = [...ACTIVE_ORDER_STATUSES, ...CLOSING_ORDER_STATUSES];
+
+  if (!allowedStatuses.includes(normalizedStatus)) {
+    throw new Error("Invalid order status");
+  }
+
+  let order = await POSOrder.findOne({ orderId });
+
+  if (!order && mongoose.Types.ObjectId.isValid(orderId)) {
+    order = await POSOrder.findById(orderId);
+  }
+
+  if (!order) {
+    throw new Error("Order not found");
+  }
+
+  order.orderStatus = normalizedStatus;
+  await order.save();
+
+  if (order.tableId) {
+    await syncTableOccupancy(order.tableId);
+  }
+
+  emitOrderUpdate("order-updated", order.branchId, order);
+
+  return order;
+};
+
 exports.payOrder = async (orderId, paymentMethod, user) => {
   requirePermission(user, "ACCESS_POS");
 
   const order = await POSOrder.findOne({ orderId });
 
-  if (!order) throw new Error("Order not found");
+  if (!order) {
+    throw new Error("Order not found");
+  }
 
   if (order.paymentStatus === "PAID") {
     throw new Error("Already paid");
@@ -266,72 +576,88 @@ exports.payOrder = async (orderId, paymentMethod, user) => {
 
   order.paymentStatus = "PAID";
   order.paymentMethod = paymentMethod;
-
   await order.save();
 
-  /* Optional: Generate Invoice */
-  const invoice = await Invoice.create({
-    organizationId: order.organizationId,
-    branchId: order.branchId,
-    type: "RESTAURANT",
-    referenceType: "POS",
-    referenceId: order.orderId,
+  let invoice = null;
 
-    // FIX: only attach bookingId if it exists
-    bookingId: order.bookingId ? order.bookingId : null,
+  if (order.orderType === "ROOM_SERVICE" && order.roomId && order.bookingId) {
+    const booking = await Booking.findOne({
+      bookingId: order.bookingId,
+      roomId: order.roomId,
+      branchId: order.branchId,
+      isActive: true,
+    });
 
-    totalAmount: order.subTotal,
-    taxAmount: order.totalTax,
-    serviceChargeAmount: order.totalServiceCharge,
-    discountAmount: order.discountAmount,
-    finalAmount: order.grandTotal,
+    if (booking) {
+      invoice = await ensureRoomInvoiceExists({
+        booking,
+        user,
+        session: null,
+      });
+      invoice.paidAmount = roundCurrency(
+        Number(invoice.paidAmount || 0) + Number(order.grandTotal || 0),
+      );
+      invoice.dueAmount = roundCurrency(
+        Math.max(Number(invoice.finalAmount || 0) - Number(invoice.paidAmount || 0), 0),
+      );
+      invoice.status =
+        invoice.dueAmount === 0
+          ? "PAID"
+          : Number(invoice.paidAmount || 0) > 0
+            ? "PARTIALLY_PAID"
+            : "UNPAID";
+      invoice.paymentHistory.push({
+        amount: order.grandTotal,
+        method: paymentMethod,
+        recordedBy: user._id,
+      });
+      invoice.updatedBy = user._id;
+      await invoice.save();
+    }
+  } else {
+    invoice = await Invoice.create({
+      organizationId: order.organizationId,
+      branchId: order.branchId,
+      type: "RESTAURANT",
+      referenceType: "POS",
+      referenceId: order.orderId,
+      bookingId: null,
+      totalAmount: order.subTotal,
+      taxAmount: order.totalTax,
+      serviceChargeAmount: order.totalServiceCharge,
+      discountAmount: order.discountAmount,
+      finalAmount: order.grandTotal,
+      status: "PAID",
+      paidAmount: order.grandTotal,
+      dueAmount: 0,
+      createdBy: user._id,
+    });
+  }
 
-    status: "PAID",
-    paidAmount: order.grandTotal,
-    dueAmount: 0,
+  if (invoice) {
+    await notificationService.createNotificationSafely({
+      title: "Restaurant invoice generated",
+      message: `Invoice ${invoice.invoiceId} was generated for order ${order.orderCode}.`,
+      type: "invoice",
+      organizationId: order.organizationId,
+      branchId: order.branchId,
+      module: "FINANCE",
+    });
 
-    createdBy: user._id,
-  });
+    order.invoiceLinked = true;
+    order.invoiceId = invoice.invoiceId;
+    await order.save();
+  }
 
-  await notificationService.createNotificationSafely({
-    title: "Restaurant invoice generated",
-    message: `Invoice ${invoice.invoiceId} was generated for order ${order.orderCode}.`,
-    type: "invoice",
-    organizationId: order.organizationId,
-    branchId: order.branchId,
-    module: "FINANCE",
-  });
-
-  order.invoiceLinked = true;
-  order.invoiceId = invoice.invoiceId;
-  await order.save();
-
-  /* 🔥 Emit Order Update */
-  const io = getIO();
-  io.to(`branch-${order.branchId}`).emit("order-updated", order);
+  emitOrderUpdate("order-updated", order.branchId, order);
 
   return order;
 };
 
-/***********************
-  Create Category
-***********************/
 exports.createCategory = async (data, user) => {
   requirePermission(user, "ACCESS_POS");
 
-  let organizationId = user.organizationId;
-
-  if (!organizationId && user.branchId) {
-    const branch = await Branch.findById(user.branchId)
-      .select("organizationId branchId")
-      .lean();
-
-    if (!branch) {
-      throw new Error("Branch not found");
-    }
-
-    organizationId = branch.organizationId;
-  }
+  const { organizationId } = await resolveOrganizationContext(user);
 
   const category = await POSCategory.create({
     organizationId,
@@ -348,55 +674,22 @@ exports.createCategory = async (data, user) => {
   return category;
 };
 
-/***********************
-  Get Categories
-***********************/
 exports.getCategories = async (user) => {
   requirePermission(user, "ACCESS_POS");
 
-  let organizationId = user.organizationId;
-  let branchId = user.branchId;
+  const { organizationId, branchId } = await resolveOrganizationContext(user);
 
-  // 🔥 resolve organization from branch (super admin case)
-  if (!organizationId && branchId) {
-    const branch = await Branch.findById(branchId)
-      .select("organizationId branchId")
-      .lean();
-
-    if (!branch) {
-      throw new Error("Branch not found");
-    }
-
-    organizationId = branch.organizationId;
-  }
-
-  return await POSCategory.find({
+  return POSCategory.find({
     organizationId,
     branchId,
     isActive: true,
   }).sort({ displayOrder: 1 });
 };
 
-/***********************
-  Update Category
-***********************/
 exports.updateCategory = async (categoryId, data, user) => {
   requirePermission(user, "ACCESS_POS");
 
-  let organizationId = user.organizationId;
-  let branchId = user.branchId;
-
-  if (!organizationId && branchId) {
-    const branch = await Branch.findById(branchId)
-      .select("organizationId branchId")
-      .lean();
-
-    if (!branch) {
-      throw new Error("Branch not found");
-    }
-
-    organizationId = branch.organizationId;
-  }
+  const { organizationId, branchId } = await resolveOrganizationContext(user);
 
   const category = await POSCategory.findOne({
     categoryId,
@@ -412,32 +705,15 @@ exports.updateCategory = async (categoryId, data, user) => {
   category.name = data.name ?? category.name;
   category.description = data.description ?? category.description;
   category.type = data.type ?? category.type;
-
   await category.save();
 
   return category;
 };
 
-/***********************
-  Delete Category
-***********************/
 exports.deleteCategory = async (categoryId, user) => {
   requirePermission(user, "ACCESS_POS");
 
-  let organizationId = user.organizationId;
-  let branchId = user.branchId;
-
-  if (!organizationId && branchId) {
-    const branch = await Branch.findById(branchId)
-      .select("organizationId branchId")
-      .lean();
-
-    if (!branch) {
-      throw new Error("Branch not found");
-    }
-
-    organizationId = branch.organizationId;
-  }
+  const { organizationId, branchId } = await resolveOrganizationContext(user);
 
   const category = await POSCategory.findOne({
     categoryId,
@@ -467,27 +743,10 @@ exports.deleteCategory = async (categoryId, user) => {
   return category;
 };
 
-/***********************
-  Create Menu Item
-***********************/
 exports.createItem = async (data, user) => {
   requirePermission(user, "ACCESS_POS");
 
-  let organizationId = user.organizationId;
-  let branchId = user.branchId;
-
-  // 🔥 resolve organization from branch (super admin case)
-  if (!organizationId && branchId) {
-    const branch = await Branch.findById(branchId)
-      .select("organizationId branchId")
-      .lean();
-
-    if (!branch) {
-      throw new Error("Branch not found");
-    }
-
-    organizationId = branch.organizationId;
-  }
+  const { organizationId, branchId } = await resolveOrganizationContext(user);
 
   const item = await POSItem.create({
     organizationId,
@@ -508,55 +767,22 @@ exports.createItem = async (data, user) => {
   return item;
 };
 
-/***********************
-  Get Menu Items
-***********************/
 exports.getItems = async (user) => {
   requirePermission(user, "ACCESS_POS");
 
-  let organizationId = user.organizationId;
-  let branchId = user.branchId;
+  const { organizationId, branchId } = await resolveOrganizationContext(user);
 
-  // 🔥 resolve organization from branch (super admin case)
-  if (!organizationId && branchId) {
-    const branch = await Branch.findById(branchId)
-      .select("organizationId branchId")
-      .lean();
-
-    if (!branch) {
-      throw new Error("Branch not found");
-    }
-
-    organizationId = branch.organizationId;
-  }
-
-  return await POSItem.find({
+  return POSItem.find({
     organizationId,
     branchId,
     isActive: true,
   }).sort({ displayOrder: 1 });
 };
 
-/***********************
-  Update Menu Item
-***********************/
 exports.updateItem = async (itemId, data, user) => {
   requirePermission(user, "ACCESS_POS");
 
-  let organizationId = user.organizationId;
-  let branchId = user.branchId;
-
-  if (!organizationId && branchId) {
-    const branch = await Branch.findById(branchId)
-      .select("organizationId branchId")
-      .lean();
-
-    if (!branch) {
-      throw new Error("Branch not found");
-    }
-
-    organizationId = branch.organizationId;
-  }
+  const { organizationId, branchId } = await resolveOrganizationContext(user);
 
   const item = await POSItem.findOne({
     itemId,
@@ -576,32 +802,15 @@ exports.updateItem = async (itemId, data, user) => {
   item.preparationTimeMinutes =
     data.preparationTimeMinutes ?? item.preparationTimeMinutes;
   item.kitchenStation = data.kitchenStation ?? item.kitchenStation;
-
   await item.save();
 
   return item;
 };
 
-/***********************
-  Delete Menu Item
-***********************/
 exports.deleteItem = async (itemId, user) => {
   requirePermission(user, "ACCESS_POS");
 
-  let organizationId = user.organizationId;
-  let branchId = user.branchId;
-
-  if (!organizationId && branchId) {
-    const branch = await Branch.findById(branchId)
-      .select("organizationId branchId")
-      .lean();
-
-    if (!branch) {
-      throw new Error("Branch not found");
-    }
-
-    organizationId = branch.organizationId;
-  }
+  const { organizationId, branchId } = await resolveOrganizationContext(user);
 
   const item = await POSItem.findOne({
     itemId,
@@ -620,32 +829,16 @@ exports.deleteItem = async (itemId, user) => {
   return item;
 };
 
-/***********************
-  Create Table
-***********************/
 exports.createTable = async (data, user) => {
   requirePermission(user, "ACCESS_POS");
 
-  let organizationId = user.organizationId;
-  let branchId = user.branchId;
-
-  // 🔥 resolve organization from branch (super admin case)
-  if (!organizationId && branchId) {
-    const branch = await Branch.findById(branchId)
-      .select("organizationId branchId")
-      .lean();
-
-    if (!branch) {
-      throw new Error("Branch not found");
-    }
-
-    organizationId = branch.organizationId;
-  }
+  const { organizationId, branchId } = await resolveOrganizationContext(user);
 
   const table = await POSTable.create({
     organizationId,
     branchId,
-    name: data.name,
+    tableNumber: data.tableNumber || data.name,
+    name: data.name || data.tableNumber,
     seats: data.seats || 2,
     tableType: data.tableType || "REGULAR",
     location: data.location,
@@ -656,66 +849,79 @@ exports.createTable = async (data, user) => {
   return table;
 };
 
-/***********************
-  Get Tables
-***********************/
-exports.getTables = async (user) => {
+exports.getTables = async (user, filters = {}) => {
   requirePermission(user, "ACCESS_POS");
 
-  let organizationId = user.organizationId;
-  let branchId = user.branchId;
+  const { organizationId, branchId } = await resolveOrganizationContext(user);
+  const targetBranchId = filters.branchId || branchId;
 
-  // 🔥 resolve organization from branch (super admin case)
-  if (!organizationId && branchId) {
-    const branch = await Branch.findById(branchId)
-      .select("organizationId branchId")
-      .lean();
+  const tables = await POSTable.find({
+    organizationId,
+    branchId: targetBranchId,
+    isActive: true,
+  }).sort({ displayOrder: 1 });
 
-    if (!branch) {
-      throw new Error("Branch not found");
-    }
+  const tableIds = tables.map((table) => table._id);
+  const activeOrders = await POSOrder.find({
+    tableId: { $in: tableIds },
+    orderStatus: { $in: ACTIVE_ORDER_STATUSES },
+    isActive: true,
+  })
+    .select("tableId")
+    .lean();
 
-    organizationId = branch.organizationId;
-  }
+  const occupiedTableIds = new Set(activeOrders.map((order) => String(order.tableId)));
 
-  return await POSTable.find({
+  return tables.map((table) => ({
+    ...table.toObject(),
+    tableNumber: table.tableNumber || table.name,
+    status: occupiedTableIds.has(String(table._id)) ? "OCCUPIED" : "AVAILABLE",
+  }));
+};
+
+exports.getOrders = async (user, filters = {}) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const { organizationId, branchId } = await resolveOrganizationContext(user);
+
+  const query = {
     organizationId,
     branchId,
     isActive: true,
-  }).sort({ displayOrder: 1 });
+  };
+
+  if (filters.status) {
+    query.orderStatus =
+      String(filters.status).toUpperCase() === "ACTIVE"
+        ? { $in: ACTIVE_ORDER_STATUSES }
+        : normalizeOrderStatus(filters.status);
+  }
+
+  if (filters.type) {
+    query.orderType = String(filters.type).toUpperCase();
+  }
+
+  return POSOrder.find(query)
+    .sort({ createdAt: -1 })
+    .populate("tableId", "name tableNumber")
+    .populate("roomId", "roomNumber")
+    .lean();
 };
 
-/* ===========================
-   GET KITCHEN ORDERS
-=========================== */
 exports.getKitchenOrders = async (user) => {
   requirePermission(user, "ACCESS_POS");
 
-  let organizationId = user.organizationId;
-  let branchId = user.branchId;
-
-  if (!organizationId && branchId) {
-    const branch = await Branch.findById(branchId)
-      .select("organizationId")
-      .lean();
-
-    if (!branch) {
-      throw new Error("Branch not found");
-    }
-
-    organizationId = branch.organizationId;
-  }
+  const { organizationId, branchId } = await resolveOrganizationContext(user);
 
   const orders = await POSOrder.find({
     organizationId,
     branchId,
-    orderStatus: "OPEN",
+    orderStatus: { $in: ACTIVE_ORDER_STATUSES },
   })
     .sort({ createdAt: -1 })
     .lean();
 
-  // 🔥 filter only active kitchen items
-  const filteredOrders = orders
+  return orders
     .map((order) => ({
       ...order,
       items: order.items.filter(
@@ -726,6 +932,4 @@ exports.getKitchenOrders = async (user) => {
       ),
     }))
     .filter((order) => order.items.length > 0);
-
-  return filteredOrders;
 };
