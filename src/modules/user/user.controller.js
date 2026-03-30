@@ -2,6 +2,7 @@ const User = require("./user.model");
 const Role = require("../rbac/role.model");
 const bcrypt = require("bcryptjs");
 const mongoose = require("mongoose");
+const Staff = require("../hr/staff.model");
 
 const ensureUserManagementAccess = (actor, targetUser) => {
   if (actor.role === "SUPER_ADMIN") {
@@ -16,6 +17,28 @@ const ensureUserManagementAccess = (actor, targetUser) => {
   }
 
   return false;
+};
+
+const softDeleteLinkedStaff = async (user) => {
+  if (!user?._id) {
+    return null;
+  }
+
+  console.log("Deleting user:", user._id);
+
+  return Staff.findOneAndUpdate(
+    {
+      userId: user._id,
+      branchId: user.branchId,
+      isDeleted: { $ne: true },
+    },
+    {
+      isDeleted: true,
+      deletedAt: new Date(),
+      isActive: false,
+    },
+    { new: true },
+  );
 };
 
 /*
@@ -238,6 +261,7 @@ exports.deleteCurrentUser = async (req, res) => {
     user.deletedAt = new Date();
     user.isActive = false;
     await user.save();
+    await softDeleteLinkedStaff(user);
 
     return res.status(200).json({
       message: "Account deleted successfully",
@@ -453,6 +477,7 @@ exports.deleteUser = async (req, res) => {
       });
     }
 
+    await softDeleteLinkedStaff(targetUser);
     await User.findByIdAndDelete(userId);
 
     return res.status(200).json({

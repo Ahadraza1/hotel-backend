@@ -6,6 +6,20 @@ const canManagePermissions = (user) => user?.role === "SUPER_ADMIN";
 
 const normalizeToken = (value) => String(value || "").trim().toUpperCase();
 
+const ensureFinanceViewInvoicePermission = async () => {
+  const existingPermission = await Permission.findOne({
+    key: "VIEW_INVOICE",
+  }).select("_id");
+
+  if (!existingPermission) {
+    await Permission.create({
+      name: "VIEW_INVOICE",
+      key: "VIEW_INVOICE",
+      module: "FINANCE",
+    });
+  }
+};
+
 /*
   Get Permissions
 */
@@ -16,6 +30,8 @@ exports.getPermissions = async (req, res) => {
         message: "Access denied",
       });
     }
+
+    await ensureFinanceViewInvoicePermission();
 
     const permissions = await Permission.find().sort({ module: 1, key: 1 });
 

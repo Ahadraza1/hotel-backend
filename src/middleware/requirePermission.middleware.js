@@ -28,13 +28,13 @@ const requirePermission = (permissionName) => {
             .filter(Boolean)
         : [permissionName?.trim().toUpperCase()].filter(Boolean);
 
-      const missingPermissions = requiredPermissions.filter(
-        (permission) => !resolvedPermissions.includes(permission),
+      const hasRequiredPermission = requiredPermissions.some((permission) =>
+        resolvedPermissions.includes(permission),
       );
 
-      if (missingPermissions.length > 0) {
+      if (requiredPermissions.length > 0 && !hasRequiredPermission) {
         return res.status(403).json({
-          message: `Missing permission: ${missingPermissions.join(", ")}`,
+          message: `Missing permission: ${requiredPermissions.join(", ")}`,
         });
       }
 

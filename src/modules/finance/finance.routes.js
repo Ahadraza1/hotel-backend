@@ -40,6 +40,13 @@ router.post(
   financeController.addExpense
 );
 
+router.get(
+  "/expenses",
+  requireAuth,
+  requirePermission(["ACCESS_FINANCE", "VIEW_EXPENSE", "VIEW_INVOICE"]),
+  financeController.getExpenses
+);
+
 /*
   Get Revenue Summary
 */

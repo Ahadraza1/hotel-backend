@@ -5,6 +5,66 @@ const mongoose = require("mongoose");
 
 const canManageRoles = (user) => user?.role === "SUPER_ADMIN";
 
+const ACCOUNTANT_FINANCE_PERMISSIONS = [
+  "ACCESS_FINANCE",
+  "VIEW_INVOICE",
+  "VIEW_EXPENSE",
+];
+
+const ensurePermissionDocs = async (keys) => {
+  const normalizedKeys = [...new Set(keys.map((key) => String(key).trim().toUpperCase()))];
+  const existingPermissions = await Permission.find({
+    key: { $in: normalizedKeys },
+  }).select("_id key");
+
+  const existingByKey = new Map(
+    existingPermissions.map((permission) => [permission.key, permission]),
+  );
+
+  for (const key of normalizedKeys) {
+    if (!existingByKey.has(key)) {
+      const created = await Permission.create({
+        name: key,
+        key,
+        module: "FINANCE",
+      });
+      existingByKey.set(key, created);
+    }
+  }
+
+  return normalizedKeys.map((key) => existingByKey.get(key)).filter(Boolean);
+};
+
+const ensureAccountantRolePermissions = async () => {
+  const accountantRole = await Role.findOne({
+    normalizedName: "ACCOUNTANT",
+  });
+
+  if (!accountantRole) {
+    return;
+  }
+
+  const permissionDocs = await ensurePermissionDocs(ACCOUNTANT_FINANCE_PERMISSIONS);
+  const nextPermissionIds = new Set(
+    (accountantRole.permissions || []).map((permissionId) => permissionId.toString()),
+  );
+
+  let didChange = false;
+
+  permissionDocs.forEach((permissionDoc) => {
+    const permissionId = permissionDoc._id.toString();
+    if (!nextPermissionIds.has(permissionId)) {
+      nextPermissionIds.add(permissionId);
+      didChange = true;
+    }
+  });
+
+  if (didChange) {
+    accountantRole.permissions = [...nextPermissionIds];
+    await accountantRole.save();
+  }
+};
+
 const canViewRoles = (user) => {
   if (user?.role === "SUPER_ADMIN" || user?.role === "CORPORATE_ADMIN") {
     return true;
@@ -45,6 +105,8 @@ exports.getRoles = async (req, res) => {
         message: "Access denied",
       });
     }
+
+    await ensureAccountantRolePermissions();
 
     const filter = getRoleAccessFilter(req.user) || {};
     const roles = await Role.find(filter)

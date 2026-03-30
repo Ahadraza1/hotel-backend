@@ -98,6 +98,7 @@ const seedRBAC = async () => {
       // FINANCE
       { name: "ACCESS_FINANCE", module: "FINANCE" },
       { name: "CREATE_INVOICE", module: "FINANCE" },
+      { name: "VIEW_INVOICE", module: "FINANCE" },
       { name: "RECORD_PAYMENT", module: "FINANCE" },
       { name: "CREATE_EXPENSE", module: "FINANCE" },
       { name: "VIEW_EXPENSE", module: "FINANCE" },
@@ -200,6 +201,7 @@ const seedRBAC = async () => {
         name: "ACCOUNTANT",
         permissions: getPermissionIds([
           "ACCESS_FINANCE",
+          "VIEW_INVOICE",
           "VIEW_EXPENSE",
           "ACCESS_REPORTS",
           "VIEW_ANALYTICS",

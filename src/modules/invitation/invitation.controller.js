@@ -194,6 +194,7 @@ exports.createInvitation = async (req, res) => {
         await Staff.create({
           organizationId: organizationId?.toString(),
           branchId: branchId.toString(),
+          userId: null,
           firstName,
           lastName,
           email: normalizedEmail,
@@ -202,16 +203,20 @@ exports.createInvitation = async (req, res) => {
           salary: salaryValue,
           joiningDate: req.body.joinedDate || new Date(),
           createdBy: inviter._id,
+          isDeleted: false,
         });
       } else {
         existingStaff.organizationId = organizationId?.toString();
         existingStaff.branchId = branchId.toString();
+        existingStaff.userId = existingStaff.userId || null;
         existingStaff.firstName = firstName;
         existingStaff.lastName = lastName;
         existingStaff.department = getDepartmentFromRole(role);
         existingStaff.designation = normalizedRole;
         existingStaff.salary = salaryValue;
         existingStaff.isActive = true;
+        existingStaff.isDeleted = false;
+        existingStaff.deletedAt = null;
         if (!existingStaff.joiningDate) {
           existingStaff.joiningDate = req.body.joinedDate || new Date();
         }
@@ -312,7 +317,42 @@ exports.createInvitation = async (req, res) => {
 </html>
 `;
 
-    await sendEmail(email, "You're Invited!", html);
+    const luxuryHtml = `
+<div style="font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #f4efe6; margin: 0; padding: 32px 16px; color: #2d2004;">
+  <div style="max-width: 640px; margin: 0 auto; background: #fffdf9; border: 1px solid rgba(176,141,87,0.25); border-radius: 18px; overflow: hidden; box-shadow: 0 24px 60px rgba(32, 22, 4, 0.12);">
+    <div style="background: linear-gradient(135deg, #18140d 0%, #2d220f 100%); padding: 32px 40px; border-bottom: 4px solid #b48a2c;">
+      <p style="margin: 0 0 8px; color: #e2c98c; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; font-weight: 700;">${organization?.name || "Hotel Management System"}</p>
+      <h2 style="margin: 0; color: #ffffff; font-size: 28px; line-height: 1.2; font-weight: 700;">Accept Invitation</h2>
+    </div>
+
+    <div style="padding: 32px 40px;">
+      <p style="margin: 0 0 24px; color: #6b5a3a; font-size: 15px; line-height: 1.7;">
+        Hello <strong style="color: #2d2004;">${name}</strong>, you have been invited to join the team below.
+      </p>
+
+      <div style="background: #fbf7f0; border: 1px solid rgba(176,141,87,0.18); border-radius: 14px; padding: 24px; margin-bottom: 24px;">
+        <p style="margin: 0 0 12px; font-size: 15px; color: #4a3917;"><strong style="color: #b48a2c;">Organization:</strong> ${organization?.name || "-"}</p>
+        <p style="margin: 0 0 12px; font-size: 15px; color: #4a3917;"><strong style="color: #b48a2c;">Branch:</strong> ${branch?.name || "Organization Level"}</p>
+        <p style="margin: 0; font-size: 15px; color: #4a3917;"><strong style="color: #b48a2c;">Role:</strong> ${role}</p>
+      </div>
+
+      <div style="text-align: center; margin-bottom: 24px;">
+        <a href="${inviteLink}" style="display: inline-block; padding: 14px 28px; background-color: #b48a2c; color: #ffffff; text-decoration: none; font-weight: 600; font-size: 16px; border-radius: 10px; box-shadow: 0 10px 24px rgba(180,138,44,0.24);">
+          Accept Invitation
+        </a>
+      </div>
+
+      <div style="border-left: 4px solid #b48a2c; background: rgba(180,138,44,0.06); border-radius: 0 14px 14px 0; padding: 20px 22px;">
+        <p style="margin: 0 0 10px; font-size: 13px; letter-spacing: 1.5px; text-transform: uppercase; color: #8a6a30; font-weight: 700;">Important</p>
+        <p style="margin: 0 0 10px; font-size: 15px; line-height: 1.8; color: #3a2a10;">This invitation will expire in 10 minutes.</p>
+        <p style="margin: 0; font-size: 14px; line-height: 1.7; color: #6b5a3a; word-break: break-word;">If the button does not work, use this link: ${inviteLink}</p>
+      </div>
+    </div>
+  </div>
+</div>
+`;
+
+    await sendEmail(email, "You're Invited!", luxuryHtml);
 
     return res.status(201).json({
       message: "Invitation sent successfully",
@@ -420,6 +460,7 @@ exports.acceptInvitation = async (req, res) => {
       await Staff.create({
         organizationId: invitation.organizationId?.toString(),
         branchId: invitation.branchId?.toString(),
+        userId: newUser._id,
         firstName,
         lastName,
         email: invitation.email?.trim().toLowerCase(),
@@ -434,6 +475,7 @@ exports.acceptInvitation = async (req, res) => {
     } else {
       existingStaff.organizationId = invitation.organizationId?.toString();
       existingStaff.branchId = invitation.branchId?.toString();
+      existingStaff.userId = newUser._id;
       existingStaff.firstName = firstName;
       existingStaff.lastName = lastName;
       existingStaff.email = invitation.email?.trim().toLowerCase();
@@ -444,6 +486,8 @@ exports.acceptInvitation = async (req, res) => {
         : 0;
       existingStaff.createdBy = newUser._id;
       existingStaff.isActive = true;
+      existingStaff.isDeleted = false;
+      existingStaff.deletedAt = null;
       await existingStaff.save();
     }
 
@@ -558,7 +602,36 @@ exports.resendInvitation = async (req, res) => {
       </a>
     `;
 
-    await sendEmail(invitation.email, "Invitation Reminder", html);
+    const luxuryHtml = `
+<div style="font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #f4efe6; margin: 0; padding: 32px 16px; color: #2d2004;">
+  <div style="max-width: 640px; margin: 0 auto; background: #fffdf9; border: 1px solid rgba(176,141,87,0.25); border-radius: 18px; overflow: hidden; box-shadow: 0 24px 60px rgba(32, 22, 4, 0.12);">
+    <div style="background: linear-gradient(135deg, #18140d 0%, #2d220f 100%); padding: 32px 40px; border-bottom: 4px solid #b48a2c;">
+      <p style="margin: 0 0 8px; color: #e2c98c; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; font-weight: 700;">Invitation Reminder</p>
+      <h2 style="margin: 0; color: #ffffff; font-size: 28px; line-height: 1.2; font-weight: 700;">Accept Invitation</h2>
+    </div>
+
+    <div style="padding: 32px 40px;">
+      <p style="margin: 0 0 24px; color: #6b5a3a; font-size: 15px; line-height: 1.7;">
+        Hello <strong style="color: #2d2004;">${invitation.name}</strong>, this is a reminder to join as <strong style="color: #2d2004;">${invitation.role}</strong>.
+      </p>
+
+      <div style="text-align: center; margin-bottom: 24px;">
+        <a href="${inviteLink}" style="display: inline-block; padding: 14px 28px; background-color: #b48a2c; color: #ffffff; text-decoration: none; font-weight: 600; font-size: 16px; border-radius: 10px; box-shadow: 0 10px 24px rgba(180,138,44,0.24);">
+          Accept Invitation
+        </a>
+      </div>
+
+      <div style="border-left: 4px solid #b48a2c; background: rgba(180,138,44,0.06); border-radius: 0 14px 14px 0; padding: 20px 22px;">
+        <p style="margin: 0 0 10px; font-size: 13px; letter-spacing: 1.5px; text-transform: uppercase; color: #8a6a30; font-weight: 700;">Important</p>
+        <p style="margin: 0 0 10px; font-size: 15px; line-height: 1.8; color: #3a2a10;">This invitation will expire in 10 minutes.</p>
+        <p style="margin: 0; font-size: 14px; line-height: 1.7; color: #6b5a3a; word-break: break-word;">If the button does not work, use this link: ${inviteLink}</p>
+      </div>
+    </div>
+  </div>
+</div>
+    `;
+
+    await sendEmail(invitation.email, "Invitation Reminder", luxuryHtml);
 
     return res.status(200).json({
       message: "Invitation resent successfully",

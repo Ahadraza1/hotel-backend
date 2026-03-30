@@ -133,6 +133,20 @@ exports.addExpense = async (data, user) => {
 };
 
 /*
+  Get Expenses
+*/
+exports.getExpenses = async (user) => {
+  if (!user.branchId) {
+    throw new Error("No active branch selected");
+  }
+
+  return Expense.find({
+    branchId: user.branchId,
+    isDeleted: { $ne: true },
+  }).sort({ createdAt: -1 });
+};
+
+/*
   Revenue Summary
 */
 exports.getRevenueSummary = async (user) => {

@@ -21,6 +21,9 @@ const PERMISSION_ALIASES = {
   VIEW_HR: ["VIEW_EMPLOYEE"],
   VIEW_EXPENSE: ["VIEW_FINANCE"],
   VIEW_FINANCE: ["VIEW_EXPENSE"],
+  VIEW_INVOICE: ["VIEW_EXPENSE", "VIEW_FINANCE"],
+  VIEW_EXPENSE: ["VIEW_FINANCE", "VIEW_INVOICE"],
+  VIEW_FINANCE: ["VIEW_EXPENSE", "VIEW_INVOICE"],
 };
 
 const normalizePermissions = (permissions = []) =>
@@ -107,6 +110,23 @@ const resolveUserPermissions = async (user) => {
   const effectivePermissions = roleDoc
     ? normalizePermissions(rolePermissions)
     : normalizePermissions(directPermissions);
+
+  const normalizedRole = String(user?.role || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "_");
+
+  if (normalizedRole === "ACCOUNTANT") {
+    return {
+      roleDoc,
+      permissions: normalizePermissions([
+        ...effectivePermissions,
+        "ACCESS_FINANCE",
+        "VIEW_INVOICE",
+        "VIEW_EXPENSE",
+      ]),
+    };
+  }
 
   return {
     roleDoc,

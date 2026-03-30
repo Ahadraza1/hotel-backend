@@ -22,6 +22,13 @@ const staffSchema = new mongoose.Schema(
       index: true,
     },
 
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
+
     firstName: {
       type: String,
       required: true,
@@ -51,6 +58,7 @@ const staffSchema = new mongoose.Schema(
         "FRONT_OFFICE",
         "HOUSEKEEPING",
         "RESTAURANT",
+        "ACCOUNTS",
         "FINANCE",
         "HR",
         "MAINTENANCE",
@@ -112,6 +120,17 @@ const staffSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
       index: true,
+    },
+
+    isDeleted: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
+    deletedAt: {
+      type: Date,
+      default: null,
     },
 
     createdBy: {

@@ -99,6 +99,23 @@ exports.addExpense = async (req, res) => {
   }
 };
 
+/*
+  Get Expenses
+*/
+exports.getExpenses = async (req, res) => {
+  try {
+    const expenses = await financeService.getExpenses(req.user);
+
+    res.status(200).json({
+      data: expenses,
+    });
+  } catch (error) {
+    res.status(400).json({
+      message: error.message,
+    });
+  }
+};
+
 
 /*
   Get Revenue Summary

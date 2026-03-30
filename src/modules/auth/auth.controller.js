@@ -763,6 +763,7 @@ exports.acceptInvite = async (req, res) => {
       await Staff.create({
         organizationId: invite.organizationId,
         branchId: invite.branchId,
+        userId: user._id,
         firstName,
         lastName,
         email: invite.email,
@@ -771,7 +772,15 @@ exports.acceptInvite = async (req, res) => {
         salary: invite.salary || 0,
         joiningDate: new Date(),
         createdBy: user._id,
+        isDeleted: false,
       });
+    } else {
+      existingStaff.userId = user._id;
+      existingStaff.isActive = true;
+      existingStaff.isDeleted = false;
+      existingStaff.deletedAt = null;
+      existingStaff.createdBy = user._id;
+      await existingStaff.save();
     }
 
     await Invitation.deleteOne({ _id: invite._id });

@@ -3,6 +3,7 @@ const Attendance = require("./attendance.model");
 const Payroll = require("./payroll.model");
 const mongoose = require("mongoose");
 const User = require("../user/user.model");
+const Role = require("../rbac/role.model");
 const notificationService = require("../notification/notification.service");
 const { ensureActiveBranch } = require("../../utils/workspaceScope");
 
@@ -78,6 +79,41 @@ const normalizeSalary = (salary) => {
   return Number.isFinite(parsedSalary) ? parsedSalary : 0;
 };
 
+const STAFF_DEPARTMENTS = [
+  "FRONT_OFFICE",
+  "HOUSEKEEPING",
+  "RESTAURANT",
+  "HR",
+  "ACCOUNTS",
+  "FINANCE",
+  "MAINTENANCE",
+  "MANAGEMENT",
+];
+
+const STAFF_DESIGNATIONS = [
+  "RECEPTIONIST",
+  "HOUSEKEEPING",
+  "ACCOUNTANT",
+  "HR_MANAGER",
+  "RESTAURANT_MANAGER",
+  "BRANCH_MANAGER",
+  "FRONT_DESK",
+  "HOUSEKEEPING_LEAD",
+  "FINANCE_MANAGER",
+];
+
+const normalizeDepartmentValue = (department) =>
+  String(department || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "_");
+
+const normalizeDesignationValue = (designation, role) =>
+  String(designation || role || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "_");
+
 const findLinkedStaffForUser = async (user, branchId) => {
   if (!user?._id && !user?.email && !user?.name) {
     return null;
@@ -95,6 +131,7 @@ const findLinkedStaffForUser = async (user, branchId) => {
   let linkedStaff = await Staff.findOne({
     branchId: branchFilter,
     isActive: true,
+    isDeleted: { $ne: true },
     $or: orFilters,
   }).sort({ createdAt: -1 });
 
@@ -102,6 +139,7 @@ const findLinkedStaffForUser = async (user, branchId) => {
     const staffCandidates = await Staff.find({
       branchId: branchFilter,
       isActive: true,
+      isDeleted: { $ne: true },
     }).select("firstName lastName salary department designation email createdBy");
 
     linkedStaff = staffCandidates.find(
@@ -192,10 +230,12 @@ exports.createStaff = async (data, user) => {
   const staffPayload = {
     firstName,
     lastName,
+    userId: data.userId || null,
     email: data.email?.trim()?.toLowerCase(),
     phone: data.phone?.trim(),
-    department: data.department?.trim() || "MANAGEMENT",
-    designation: data.designation?.trim() || data.role?.trim() || "STAFF",
+    department: normalizeDepartmentValue(data.department) || "MANAGEMENT",
+    designation:
+      normalizeDesignationValue(data.designation, data.role) || "RECEPTIONIST",
     employmentType: data.employmentType,
     salary: normalizeSalary(data.salary),
     overtimeRatePerHour: data.overtimeRatePerHour,
@@ -252,14 +292,16 @@ exports.getStaff = async (user, branchId) => {
   const users = await User.find({
     branchId: branchFilter,
     isActive: true,
+    isDeleted: { $ne: true },
   }).select("name email role branchId");
 
   // ✅ GET STAFF (HR DATA)
   const staff = await Staff.find({
     branchId: branchFilter,
     isActive: true,
+    isDeleted: { $ne: true },
   }).select(
-    "staffId firstName lastName department designation salary email branchId organizationId createdBy",
+    "staffId firstName lastName department designation salary email branchId organizationId createdBy userId",
   );
 
   const today = new Date();
@@ -302,7 +344,8 @@ exports.getStaff = async (user, branchId) => {
   // 🔥 MERGE USER + STAFF
   const matchedStaffIds = new Set();
 
-  const userRows = users.map((u) => {
+  const userRows = users
+    .map((u) => {
     const staffData =
       staffByCreatorMap.get(u._id.toString()) ||
       staffByEmailMap.get(u.email?.trim().toLowerCase()) ||
@@ -334,7 +377,16 @@ exports.getStaff = async (user, branchId) => {
 
       email: u.email,
     };
-  });
+    })
+    .filter((row) => row.staffId && matchedStaffIds.size >= 0)
+    .filter((row) =>
+      staff.some(
+        (staffMember) =>
+          staffMember.staffId === row.staffId ||
+          staffMember.userId?.toString() === row._id ||
+          staffMember.createdBy?.toString() === row._id,
+      ),
+    );
 
   const standaloneStaffRows = staff
     .filter((staffMember) => !matchedStaffIds.has(staffMember._id.toString()))
@@ -366,21 +418,87 @@ exports.updateStaff = async (staffId, data, user) => {
     throw error;
   }
 
-  const allowedUpdates = [
-    "firstName",
-    "lastName",
-    "department",
-    "designation",
-    "salary",
-  ];
+  const firstName =
+    data.firstName !== undefined ? String(data.firstName).trim() : staff.firstName;
+  const lastName =
+    data.lastName !== undefined ? String(data.lastName).trim() : staff.lastName;
+  const department = normalizeDepartmentValue(
+    data.department !== undefined ? data.department : staff.department,
+  );
+  const designation = normalizeDesignationValue(
+    data.designation !== undefined ? data.designation : staff.designation,
+    data.role,
+  );
+  const salaryInput = data.salary !== undefined ? data.salary : staff.salary;
+  const salary = normalizeSalary(salaryInput);
 
-  allowedUpdates.forEach((field) => {
-    if (data[field] !== undefined) {
-      staff[field] = data[field];
-    }
-  });
+  if (!department) {
+    const error = new Error("Department is required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (!STAFF_DEPARTMENTS.includes(department)) {
+    const error = new Error("Invalid department selected");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (!designation) {
+    const error = new Error("Designation is required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (!STAFF_DESIGNATIONS.includes(designation)) {
+    const error = new Error("Invalid designation selected");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (!Number.isFinite(Number(salaryInput)) || Number(salaryInput) < 0) {
+    const error = new Error("Please enter a valid salary");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  staff.firstName = firstName;
+  staff.lastName = lastName;
+  staff.department = department;
+  staff.designation = designation;
+  staff.salary = salary;
 
   await staff.save();
+
+  const linkedUserQuery = staff.userId
+    ? { _id: staff.userId }
+    : staff.email
+      ? {
+          email: staff.email.trim().toLowerCase(),
+          branchId: buildBranchIdFilter(staff.branchId),
+          isDeleted: { $ne: true },
+        }
+      : null;
+
+  if (linkedUserQuery) {
+    const linkedUser = await User.findOne(linkedUserQuery);
+
+    if (linkedUser) {
+      const linkedRole = await Role.findOne({
+        normalizedName: designation,
+      }).populate("permissions", "key name");
+
+      linkedUser.role = designation;
+      linkedUser.roleRef = linkedRole?._id || null;
+      linkedUser.permissions = Array.isArray(linkedRole?.permissions)
+        ? linkedRole.permissions
+            .map((permission) => permission.key || permission.name)
+            .filter(Boolean)
+        : [];
+
+      await linkedUser.save();
+    }
+  }
 
   return staff;
 };
@@ -388,17 +506,45 @@ exports.updateStaff = async (staffId, data, user) => {
 exports.deleteStaff = async (staffId, user) => {
   requirePermission(user, "ACCESS_HR");
 
-  const staff = await Staff.findOne(
+  let staff = await Staff.findOne(
     buildStaffLookupQuery(staffId, user.branchId),
   );
 
+  if (!staff && mongoose.Types.ObjectId.isValid(staffId)) {
+    const linkedUserId = new mongoose.Types.ObjectId(staffId);
+
+    staff = await Staff.findOne({
+      branchId: buildBranchIdFilter(user.branchId),
+      isActive: true,
+      isDeleted: { $ne: true },
+      $or: [{ userId: linkedUserId }, { createdBy: linkedUserId }],
+    });
+  }
+
+  if (!staff && mongoose.Types.ObjectId.isValid(staffId)) {
+    const linkedUser = await User.findOne({
+      _id: new mongoose.Types.ObjectId(staffId),
+      branchId: buildBranchIdFilter(user.branchId),
+      isDeleted: { $ne: true },
+    });
+
+    if (linkedUser) {
+      linkedUser.isActive = false;
+      linkedUser.isDeleted = true;
+      linkedUser.deletedAt = new Date();
+      await linkedUser.save();
+
+      return { message: "Staff deleted successfully" };
+    }
+  }
+
   if (!staff || !staff.isActive) {
-    const error = new Error("Staff not found");
-    error.statusCode = 404;
-    throw error;
+    return { message: "Staff deleted successfully" };
   }
 
   staff.isActive = false;
+  staff.isDeleted = true;
+  staff.deletedAt = new Date();
   await staff.save();
 
   return { message: "Staff deleted successfully" };
