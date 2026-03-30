@@ -667,6 +667,8 @@ exports.updateBooking = async (bookingId, data, user) => {
       module: "BOOKING",
     });
 
+    await guestService.syncGuestFromBooking(booking.toObject(), user);
+
     return booking;
   } catch (error) {
     await session.abortTransaction();
