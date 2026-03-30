@@ -51,6 +51,12 @@ function requirePermission(user, permission) {
 
 const roundCurrency = (value) => Number(Number(value || 0).toFixed(2));
 
+const ORDER_TYPE_LABELS = {
+  DINE_IN: "Dine-in",
+  ROOM_SERVICE: "Room Service",
+  TAKEAWAY: "Takeaway",
+};
+
 const normalizeOrderStatus = (status) => {
   if (!status) return "OPEN";
 
@@ -134,6 +140,19 @@ const resolveCheckedInBookingForRoom = async (roomId, branchId, session = null) 
   return bookingQuery;
 };
 
+const getInvoiceGuestName = ({ orderType, booking, tableNumber }) => {
+  if (orderType === "ROOM_SERVICE") {
+    return booking?.guestName || "Guest";
+  }
+
+  if (orderType === "TAKEAWAY") {
+    return "Takeaway Guest";
+  }
+
+  const normalizedTableName = String(tableNumber || "").trim();
+  return normalizedTableName ? normalizedTableName : "Walk-in Guest";
+};
+
 const ensureRoomInvoiceExists = async ({ booking, user, session }) => {
   const invoiceQuery = Invoice.findOne({
     bookingId: booking._id,
@@ -179,6 +198,8 @@ const ensureRoomInvoiceExists = async ({ booking, user, session }) => {
         organizationId: booking.organizationId,
         branchId: booking.branchId,
         bookingId: booking._id,
+        guestName: booking.guestName || "",
+        orderType: "ROOM_SERVICE",
         type: "ROOM",
         referenceType: "BOOKING",
         referenceId: booking.bookingId,
@@ -214,6 +235,9 @@ const ensureRoomInvoiceExists = async ({ booking, user, session }) => {
 
 const attachRoomServiceToInvoice = async ({ order, booking, user, session }) => {
   const invoice = await ensureRoomInvoiceExists({ booking, user, session });
+
+  invoice.guestName = booking?.guestName || invoice.guestName || "Guest";
+  invoice.orderType = "ROOM_SERVICE";
 
   invoice.lineItems.push({
     description: `Room Service ${order.orderCode}`,
@@ -260,6 +284,124 @@ const attachRoomServiceToInvoice = async ({ order, booking, user, session }) => 
   await order.save({ session });
 
   return invoice;
+};
+
+const createRestaurantInvoiceForOrder = async ({ order, booking, user, session = null }) => {
+  if (order.invoiceLinked && order.invoiceId) {
+    const existingInvoice = await Invoice.findOne({
+      invoiceId: order.invoiceId,
+      isActive: true,
+    });
+
+    if (existingInvoice) {
+      return existingInvoice;
+    }
+  }
+
+  const guestName = getInvoiceGuestName({
+    orderType: order.orderType,
+    booking,
+    tableNumber: order.tableNumber,
+  });
+
+  const lineItems = (order.items || []).map((item) => ({
+    description: item.nameSnapshot || "Menu Item",
+    quantity: Number(item.quantity || 0),
+    unitPrice: Number(item.priceSnapshot || 0),
+    total: Number(item.totalItemAmount || 0),
+  }));
+
+  const invoicePayload = {
+    organizationId: order.organizationId,
+    branchId: order.branchId,
+    type: "RESTAURANT",
+    referenceType: "POS",
+    referenceId: order.orderId,
+    bookingId: null,
+    guestName,
+    orderType: order.orderType,
+    lineItems,
+    totalAmount: order.subTotal,
+    taxAmount: order.totalTax,
+    serviceChargeAmount: order.totalServiceCharge,
+    discountAmount: order.discountAmount,
+    finalAmount: order.grandTotal,
+    status: "PAID",
+    paidAmount: order.grandTotal,
+    dueAmount: 0,
+    paymentHistory: order.paymentMethod
+      ? [
+          {
+            amount: order.grandTotal,
+            method: order.paymentMethod,
+            recordedBy: user._id,
+            paidAt: new Date(),
+          },
+        ]
+      : [],
+    createdBy: user._id,
+    updatedBy: user._id,
+  };
+
+  const createdInvoice = session
+    ? (await Invoice.create([invoicePayload], { session }))[0]
+    : await Invoice.create(invoicePayload);
+
+  order.invoiceLinked = true;
+  order.invoiceId = createdInvoice.invoiceId;
+
+  if (session) {
+    await order.save({ session });
+  } else {
+    await order.save();
+  }
+
+  return createdInvoice;
+};
+
+const ensureCompletedOrderInvoice = async ({ order, user, session = null }) => {
+  if (order.paymentStatus !== "PAID" || order.orderStatus !== "COMPLETED") {
+    return null;
+  }
+
+  if (order.orderType === "ROOM_SERVICE") {
+    if (!order.roomId || !order.bookingId) {
+      return null;
+    }
+
+    const bookingQuery = Booking.findOne({
+      bookingId: order.bookingId,
+      roomId: order.roomId,
+      branchId: order.branchId,
+      isActive: true,
+    });
+
+    if (session) {
+      bookingQuery.session(session);
+    }
+
+    const booking = await bookingQuery;
+
+    if (!booking) {
+      return null;
+    }
+
+    const invoice = await attachRoomServiceToInvoice({
+      order,
+      booking,
+      user,
+      session,
+    });
+
+    return invoice;
+  }
+
+  return createRestaurantInvoiceForOrder({
+    order,
+    booking: null,
+    user,
+    session,
+  });
 };
 
 exports.createOrder = async (data, user) => {
@@ -521,7 +663,29 @@ exports.completeOrder = async (orderId, user) => {
   }
 
   order.orderStatus = "COMPLETED";
-  await order.save();
+
+  if (
+    order.paymentStatus === "PAID" &&
+    (!order.invoiceLinked || !order.invoiceId)
+  ) {
+    const invoice = await ensureCompletedOrderInvoice({ order, user });
+
+    if (invoice) {
+      await notificationService.createNotificationSafely({
+        title: "Restaurant invoice generated",
+        message: `Invoice ${invoice.invoiceId} was generated for order ${order.orderCode}.`,
+        type: "invoice",
+        organizationId: order.organizationId,
+        branchId: order.branchId,
+        module: "FINANCE",
+      });
+    } else {
+      await order.save();
+    }
+  } else {
+    await order.save();
+  }
+
   await syncTableOccupancy(order.tableId);
 
   emitOrderUpdate("order-updated", order.branchId, order);
@@ -550,13 +714,37 @@ exports.updateOrderStatus = async (orderId, status, user) => {
   }
 
   order.orderStatus = normalizedStatus;
-  await order.save();
+
+  let invoice = null;
+
+  if (
+    normalizedStatus === "COMPLETED" &&
+    order.paymentStatus === "PAID" &&
+    (!order.invoiceLinked || !order.invoiceId)
+  ) {
+    invoice = await ensureCompletedOrderInvoice({ order, user });
+  }
+
+  if (!invoice) {
+    await order.save();
+  }
 
   if (order.tableId) {
     await syncTableOccupancy(order.tableId);
   }
 
   emitOrderUpdate("order-updated", order.branchId, order);
+
+  if (invoice) {
+    await notificationService.createNotificationSafely({
+      title: "Restaurant invoice generated",
+      message: `Invoice ${invoice.invoiceId} was generated for order ${order.orderCode}.`,
+      type: "invoice",
+      organizationId: order.organizationId,
+      branchId: order.branchId,
+      module: "FINANCE",
+    });
+  }
 
   return order;
 };
@@ -594,6 +782,8 @@ exports.payOrder = async (orderId, paymentMethod, user) => {
         user,
         session: null,
       });
+      invoice.guestName = booking.guestName || invoice.guestName || "Guest";
+      invoice.orderType = "ROOM_SERVICE";
       invoice.paidAmount = roundCurrency(
         Number(invoice.paidAmount || 0) + Number(order.grandTotal || 0),
       );
@@ -614,23 +804,11 @@ exports.payOrder = async (orderId, paymentMethod, user) => {
       invoice.updatedBy = user._id;
       await invoice.save();
     }
-  } else {
-    invoice = await Invoice.create({
-      organizationId: order.organizationId,
-      branchId: order.branchId,
-      type: "RESTAURANT",
-      referenceType: "POS",
-      referenceId: order.orderId,
-      bookingId: null,
-      totalAmount: order.subTotal,
-      taxAmount: order.totalTax,
-      serviceChargeAmount: order.totalServiceCharge,
-      discountAmount: order.discountAmount,
-      finalAmount: order.grandTotal,
-      status: "PAID",
-      paidAmount: order.grandTotal,
-      dueAmount: 0,
-      createdBy: user._id,
+  } else if (order.orderStatus === "COMPLETED") {
+    invoice = await createRestaurantInvoiceForOrder({
+      order,
+      booking: null,
+      user,
     });
   }
 

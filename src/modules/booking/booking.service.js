@@ -234,6 +234,8 @@ const createOrSyncBookingInvoice = async ({ booking, user, session }) => {
     organizationId: booking.organizationId,
     branchId: booking.branchId,
     bookingId: booking._id,
+    guestName: booking.guestName || "",
+    orderType: "ROOM_SERVICE",
     type: "ROOM",
     referenceType: "BOOKING",
     referenceId: booking.bookingId,

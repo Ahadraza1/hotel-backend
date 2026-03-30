@@ -32,6 +32,20 @@ const invoiceSchema = new mongoose.Schema(
       index: true,
     },
 
+    guestName: {
+      type: String,
+      default: "",
+      trim: true,
+      index: true,
+    },
+
+    orderType: {
+      type: String,
+      enum: ["DINE_IN", "ROOM_SERVICE", "TAKEAWAY", null],
+      default: null,
+      index: true,
+    },
+
     type: {
       type: String,
       enum: ["ROOM", "RESTAURANT"],

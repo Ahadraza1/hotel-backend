@@ -8,6 +8,38 @@ const POSOrder = require("../pos/posOrder.model");
 const branchSettingsService = require("../branchSettings/branchSettings.service");
 const { ensureActiveBranch } = require("../../utils/workspaceScope");
 
+const deriveGuestName = ({ invoice, booking, posOrder }) => {
+  if (invoice.guestName) {
+    return invoice.guestName;
+  }
+
+  if (invoice.referenceType === "BOOKING") {
+    return booking?.guestName || "Guest";
+  }
+
+  if (invoice.orderType === "TAKEAWAY" || posOrder?.orderType === "TAKEAWAY") {
+    return "Takeaway Guest";
+  }
+
+  if (invoice.orderType === "ROOM_SERVICE" || posOrder?.orderType === "ROOM_SERVICE") {
+    return booking?.guestName || "Guest";
+  }
+
+  return posOrder?.tableNumber || "Walk-in Guest";
+};
+
+const deriveOrderType = ({ invoice, posOrder }) => {
+  if (invoice.orderType) {
+    return invoice.orderType;
+  }
+
+  if (invoice.referenceType === "BOOKING") {
+    return "ROOM_SERVICE";
+  }
+
+  return posOrder?.orderType || null;
+};
+
 /*
   Permission Helper
 */
@@ -62,9 +94,44 @@ exports.getInvoices = async (user, filters = {}) => {
     ];
   }
 
-  const invoices = await Invoice.find(query).sort({ createdAt: -1 });
+  const invoices = await Invoice.find(query).sort({ createdAt: -1 }).lean();
 
-  return invoices;
+  const bookingObjectIds = invoices
+    .map((invoice) => invoice.bookingId)
+    .filter(Boolean);
+  const posReferenceIds = invoices
+    .filter((invoice) => invoice.referenceType === "POS" && invoice.referenceId)
+    .map((invoice) => invoice.referenceId);
+
+  const [bookings, posOrders] = await Promise.all([
+    bookingObjectIds.length
+      ? Booking.find({ _id: { $in: bookingObjectIds } })
+          .select("_id guestName guestPhone")
+          .lean()
+      : [],
+    posReferenceIds.length
+      ? POSOrder.find({ orderId: { $in: posReferenceIds } })
+          .select("orderId orderType tableNumber bookingId")
+          .lean()
+      : [],
+  ]);
+
+  const bookingMap = new Map(bookings.map((booking) => [String(booking._id), booking]));
+  const posOrderMap = new Map(posOrders.map((order) => [String(order.orderId), order]));
+
+  return invoices.map((invoice) => {
+    const booking = invoice.bookingId ? bookingMap.get(String(invoice.bookingId)) : null;
+    const posOrder =
+      invoice.referenceType === "POS" && invoice.referenceId
+        ? posOrderMap.get(String(invoice.referenceId))
+        : null;
+
+    return {
+      ...invoice,
+      guestName: deriveGuestName({ invoice, booking, posOrder }),
+      orderType: deriveOrderType({ invoice, posOrder }),
+    };
+  });
 };
 
 /*

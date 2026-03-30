@@ -141,7 +141,7 @@ const drawRoomInvoice = (
     .text((invoice.status || "UNKNOWN").toUpperCase(), 480, currentY + 26);
 
   currentY = 220;
-  const guestName = booking?.guestName || "N/A";
+  const guestName = invoice.guestName || booking?.guestName || "N/A";
   const roomNumber = booking?.roomId?.roomNumber || "N/A";
   const checkIn = booking?.checkInDate
     ? new Date(booking.checkInDate).toLocaleDateString()
@@ -375,8 +375,12 @@ const drawRestaurantInvoice = (
     posOrder?.createdAt || invoice.createdAt,
   );
   const orderType =
-    orderTypeLabelMap[posOrder?.orderType] || posOrder?.orderType || "N/A";
-  const customerName = booking?.guestName || "Walk-in Customer";
+    orderTypeLabelMap[invoice.orderType] ||
+    orderTypeLabelMap[posOrder?.orderType] ||
+    invoice.orderType ||
+    posOrder?.orderType ||
+    "N/A";
+  const customerName = invoice.guestName || booking?.guestName || "Walk-in Customer";
   const customerPhone = booking?.guestPhone || "N/A";
   const contactInfo =
     branch.contactNumber || organization.contactPhone || "N/A";
