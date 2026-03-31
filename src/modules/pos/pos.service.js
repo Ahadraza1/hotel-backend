@@ -66,8 +66,20 @@ const normalizeOrderStatus = (status) => {
 
 const emitOrderUpdate = (eventName, branchId, payload) => {
   const io = getIO();
+  const aliasEventName =
+    eventName === "new-order"
+      ? "ORDER_CREATED"
+      : eventName === "order-updated"
+        ? "ORDER_UPDATED"
+        : null;
+
   io.to(`branch_${branchId}`).emit(eventName, payload);
   io.to(`branch-${branchId}`).emit(eventName, payload);
+
+  if (aliasEventName) {
+    io.to(`branch_${branchId}`).emit(aliasEventName, payload);
+    io.to(`branch-${branchId}`).emit(aliasEventName, payload);
+  }
 };
 
 const resolveOrganizationContext = async (user) => {
@@ -151,6 +163,25 @@ const getInvoiceGuestName = ({ orderType, booking, tableNumber }) => {
 
   const normalizedTableName = String(tableNumber || "").trim();
   return normalizedTableName ? normalizedTableName : "Walk-in Guest";
+};
+
+const resolveBookingForRoomServiceOrder = async ({ order, session = null }) => {
+  if (!order.roomId || !order.bookingId) {
+    return null;
+  }
+
+  const bookingQuery = Booking.findOne({
+    bookingId: order.bookingId,
+    roomId: order.roomId,
+    branchId: order.branchId,
+    isActive: true,
+  });
+
+  if (session) {
+    bookingQuery.session(session);
+  }
+
+  return bookingQuery;
 };
 
 const ensureRoomInvoiceExists = async ({ booking, user, session }) => {
@@ -300,7 +331,7 @@ const createRestaurantInvoiceForOrder = async ({ order, booking, user, session =
 
   const guestName = getInvoiceGuestName({
     orderType: order.orderType,
-    booking,
+    booking: booking || (order.guestName ? { guestName: order.guestName } : null),
     tableNumber: order.tableNumber,
   });
 
@@ -317,7 +348,7 @@ const createRestaurantInvoiceForOrder = async ({ order, booking, user, session =
     type: "RESTAURANT",
     referenceType: "POS",
     referenceId: order.orderId,
-    bookingId: null,
+    bookingId: booking?._id || null,
     guestName,
     orderType: order.orderType,
     lineItems,
@@ -365,35 +396,18 @@ const ensureCompletedOrderInvoice = async ({ order, user, session = null }) => {
   }
 
   if (order.orderType === "ROOM_SERVICE") {
-    if (!order.roomId || !order.bookingId) {
-      return null;
-    }
-
-    const bookingQuery = Booking.findOne({
-      bookingId: order.bookingId,
-      roomId: order.roomId,
-      branchId: order.branchId,
-      isActive: true,
-    });
-
-    if (session) {
-      bookingQuery.session(session);
-    }
-
-    const booking = await bookingQuery;
+    const booking = await resolveBookingForRoomServiceOrder({ order, session });
 
     if (!booking) {
       return null;
     }
 
-    const invoice = await attachRoomServiceToInvoice({
+    return createRestaurantInvoiceForOrder({
       order,
       booking,
       user,
       session,
     });
-
-    return invoice;
   }
 
   return createRestaurantInvoiceForOrder({
@@ -573,6 +587,10 @@ exports.createOrder = async (data, user) => {
             normalizedOrderType === "ROOM_SERVICE"
               ? activeBooking?.bookingId || bookingId || null
               : bookingId || null,
+          guestName:
+            normalizedOrderType === "ROOM_SERVICE"
+              ? activeBooking?.guestName || ""
+              : "",
           orderType: normalizedOrderType,
           items: orderItems,
           subTotal,
@@ -593,15 +611,6 @@ exports.createOrder = async (data, user) => {
     if (selectedTable) {
       selectedTable.status = "OCCUPIED";
       await selectedTable.save({ session });
-    }
-
-    if (normalizedOrderType === "ROOM_SERVICE" && activeBooking) {
-      await attachRoomServiceToInvoice({
-        order,
-        booking: activeBooking,
-        user,
-        session,
-      });
     }
 
     await session.commitTransaction();
@@ -768,46 +777,15 @@ exports.payOrder = async (orderId, paymentMethod, user) => {
 
   let invoice = null;
 
-  if (order.orderType === "ROOM_SERVICE" && order.roomId && order.bookingId) {
-    const booking = await Booking.findOne({
-      bookingId: order.bookingId,
-      roomId: order.roomId,
-      branchId: order.branchId,
-      isActive: true,
-    });
+  if (order.orderStatus === "COMPLETED") {
+    const booking =
+      order.orderType === "ROOM_SERVICE"
+        ? await resolveBookingForRoomServiceOrder({ order })
+        : null;
 
-    if (booking) {
-      invoice = await ensureRoomInvoiceExists({
-        booking,
-        user,
-        session: null,
-      });
-      invoice.guestName = booking.guestName || invoice.guestName || "Guest";
-      invoice.orderType = "ROOM_SERVICE";
-      invoice.paidAmount = roundCurrency(
-        Number(invoice.paidAmount || 0) + Number(order.grandTotal || 0),
-      );
-      invoice.dueAmount = roundCurrency(
-        Math.max(Number(invoice.finalAmount || 0) - Number(invoice.paidAmount || 0), 0),
-      );
-      invoice.status =
-        invoice.dueAmount === 0
-          ? "PAID"
-          : Number(invoice.paidAmount || 0) > 0
-            ? "PARTIALLY_PAID"
-            : "UNPAID";
-      invoice.paymentHistory.push({
-        amount: order.grandTotal,
-        method: paymentMethod,
-        recordedBy: user._id,
-      });
-      invoice.updatedBy = user._id;
-      await invoice.save();
-    }
-  } else if (order.orderStatus === "COMPLETED") {
     invoice = await createRestaurantInvoiceForOrder({
       order,
-      booking: null,
+      booking,
       user,
     });
   }
