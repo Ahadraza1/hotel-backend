@@ -24,7 +24,6 @@ const mergedInvoiceSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Booking",
       required: true,
-      index: true,
     },
     roomInvoiceId: {
       type: mongoose.Schema.Types.ObjectId,
