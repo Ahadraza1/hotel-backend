@@ -50,13 +50,11 @@ roleSchema.index(
   { unique: true, name: "uniq_role_name_per_organization" },
 );
 
-roleSchema.pre("validate", function (next) {
+roleSchema.pre("validate", function () {
   if (this.name) {
     this.name = this.name.trim();
     this.normalizedName = this.name.toUpperCase().replace(/\s+/g, "_");
   }
-
-  next();
 });
 
 module.exports = mongoose.model("Role", roleSchema);

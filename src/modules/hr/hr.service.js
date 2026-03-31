@@ -114,6 +114,26 @@ const normalizeDesignationValue = (designation, role) =>
     .toUpperCase()
     .replace(/\s+/g, "_");
 
+const findRoleByDesignation = async (designation) => {
+  const normalizedDesignation = normalizeDesignationValue(designation);
+
+  if (!normalizedDesignation) {
+    return null;
+  }
+
+  const roleNameWithSpaces = normalizedDesignation.replace(/_/g, " ");
+
+  return Role.findOne({
+    $or: [
+      { normalizedName: normalizedDesignation },
+      { name: roleNameWithSpaces },
+      { name: normalizedDesignation },
+    ],
+  })
+    .select("_id name normalizedName")
+    .lean();
+};
+
 const findLinkedStaffForUser = async (user, branchId) => {
   if (!user?._id && !user?.email && !user?.name) {
     return null;
@@ -220,9 +240,18 @@ exports.createStaff = async (data, user) => {
 
   const firstName = data.firstName?.trim();
   const lastName = data.lastName?.trim() || "";
+  const designation = normalizeDesignationValue(data.designation, data.role) || "RECEPTIONIST";
 
   if (!firstName) {
     const error = new Error("First name is required");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const linkedRole = await findRoleByDesignation(designation);
+
+  if (!linkedRole && designation) {
+    const error = new Error("Invalid designation selected");
     error.statusCode = 400;
     throw error;
   }
@@ -234,8 +263,7 @@ exports.createStaff = async (data, user) => {
     email: data.email?.trim()?.toLowerCase(),
     phone: data.phone?.trim(),
     department: normalizeDepartmentValue(data.department) || "MANAGEMENT",
-    designation:
-      normalizeDesignationValue(data.designation, data.role) || "RECEPTIONIST",
+    designation,
     employmentType: data.employmentType,
     salary: normalizeSalary(data.salary),
     overtimeRatePerHour: data.overtimeRatePerHour,
@@ -263,6 +291,28 @@ exports.createStaff = async (data, user) => {
   });
 
   return staff;
+};
+
+exports.getAssignableRoles = async (user) => {
+  requirePermission(user, "ACCESS_HR");
+
+  return Role.find({
+    $and: [
+      {
+        normalizedName: {
+          $nin: ["SUPER_ADMIN", "CORPORATE_ADMIN"],
+        },
+      },
+      {
+        name: {
+          $nin: ["SUPER_ADMIN", "CORPORATE_ADMIN", "Super Admin", "Corporate Admin"],
+        },
+      },
+    ],
+  })
+    .select("_id name normalizedName type")
+    .sort({ type: 1, name: 1 })
+    .lean();
 };
 
 // get staff
@@ -450,7 +500,9 @@ exports.updateStaff = async (staffId, data, user) => {
     throw error;
   }
 
-  if (!STAFF_DESIGNATIONS.includes(designation)) {
+  const linkedRole = await findRoleByDesignation(designation);
+
+  if (!linkedRole && !STAFF_DESIGNATIONS.includes(designation)) {
     const error = new Error("Invalid designation selected");
     error.statusCode = 400;
     throw error;
@@ -484,14 +536,14 @@ exports.updateStaff = async (staffId, data, user) => {
     const linkedUser = await User.findOne(linkedUserQuery);
 
     if (linkedUser) {
-      const linkedRole = await Role.findOne({
+      const linkedRoleDoc = await Role.findOne({
         normalizedName: designation,
       }).populate("permissions", "key name");
 
       linkedUser.role = designation;
-      linkedUser.roleRef = linkedRole?._id || null;
-      linkedUser.permissions = Array.isArray(linkedRole?.permissions)
-        ? linkedRole.permissions
+      linkedUser.roleRef = linkedRoleDoc?._id || null;
+      linkedUser.permissions = Array.isArray(linkedRoleDoc?.permissions)
+        ? linkedRoleDoc.permissions
             .map((permission) => permission.key || permission.name)
             .filter(Boolean)
         : [];

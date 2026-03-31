@@ -25,19 +25,7 @@ const userSchema = new mongoose.Schema(
 
     role: {
       type: String,
-      enum: [
-        "SUPER_ADMIN",
-        "CORPORATE_ADMIN",
-        "BRANCH_MANAGER",
-        "RECEPTIONIST",
-        "ACCOUNTANT",
-        "HOUSEKEEPING",
-        "HR_MANAGER",
-        "RESTAURANT_MANAGER",
-        "FRONT_DESK",
-        "HOUSEKEEPING_LEAD",
-        "FINANCE_MANAGER",
-      ],
+      trim: true,
       required: true,
     },
 

@@ -36,6 +36,16 @@ exports.getStaff = asyncHandler(async (req, res) => {
   });
 });
 
+exports.getAssignableRoles = asyncHandler(async (req, res) => {
+  const roles = await hrService.getAssignableRoles(req.user);
+
+  return res.status(200).json({
+    success: true,
+    count: roles.length,
+    data: roles,
+  });
+});
+
 exports.updateStaff = asyncHandler(async (req, res) => {
   const { staffId } = req.params;
 

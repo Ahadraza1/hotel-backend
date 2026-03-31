@@ -36,6 +36,13 @@ router.get(
   hrController.getStaff
 );
 
+router.get(
+  "/roles",
+  requireAuth,
+  requirePermission(["ACCESS_HR", "VIEW_EMPLOYEE"]),
+  hrController.getAssignableRoles
+);
+
 router.patch(
   "/staff/:staffId",
   requireAuth,

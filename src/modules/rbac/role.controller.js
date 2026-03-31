@@ -148,7 +148,7 @@ exports.createRole = async (req, res) => {
 
     const duplicate = await Role.findOne({
       normalizedName,
-      organizationId,
+      $or: [{ organizationId }, { organizationId: { $exists: false } }],
     }).lean();
 
     if (duplicate) {
@@ -160,6 +160,7 @@ exports.createRole = async (req, res) => {
 
     const role = await Role.create({
       name,
+      normalizedName,
       description,
       type: "CUSTOM",
       organizationId,
@@ -183,6 +184,12 @@ exports.createRole = async (req, res) => {
         message: "Role already exists",
       });
     }
+
+    console.error("Failed to create role", {
+      name: req.body?.name,
+      error: error?.message,
+      stack: error?.stack,
+    });
 
     return res.status(500).json({
       success: false,

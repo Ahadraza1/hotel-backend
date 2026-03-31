@@ -337,22 +337,8 @@ exports.changeUserRole = async (req, res) => {
     }
 
     // 4. Update user:
-    // - Use normalized name for consistency with User model enum
+    // - Use normalized name for consistency across auth/session handling
     const normalizedRoleName = newRole.normalizedName || newRole.name.toUpperCase().replace(/\s+/g, "_");
-    
-    // Check if the role is valid for our User enum
-    const validRoles = [
-      "SUPER_ADMIN", "CORPORATE_ADMIN", "BRANCH_MANAGER", "RECEPTIONIST", 
-      "ACCOUNTANT", "HOUSEKEEPING", "HR_MANAGER", "RESTAURANT_MANAGER",
-      "FRONT_DESK", "HOUSEKEEPING_LEAD", "FINANCE_MANAGER"
-    ];
-
-    if (!validRoles.includes(normalizedRoleName)) {
-      return res.status(400).json({
-        success: false,
-        message: `Role ${normalizedRoleName} is not a valid system role`,
-      });
-    }
 
     if (
       targetUser.role === normalizedRoleName &&
