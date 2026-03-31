@@ -11,6 +11,24 @@ const ACCOUNTANT_FINANCE_PERMISSIONS = [
   "VIEW_EXPENSE",
 ];
 
+const ensureSystemRoles = async () => {
+  await Role.findOneAndUpdate(
+    { normalizedName: "WAITER", organizationId: null },
+    {
+      $setOnInsert: {
+        name: "Waiter",
+        normalizedName: "WAITER",
+        description: "",
+        permissions: [],
+      },
+    },
+    {
+      new: true,
+      upsert: true,
+    },
+  );
+};
+
 const ensurePermissionDocs = async (keys) => {
   const normalizedKeys = [...new Set(keys.map((key) => String(key).trim().toUpperCase()))];
   const existingPermissions = await Permission.find({
@@ -106,6 +124,7 @@ exports.getRoles = async (req, res) => {
       });
     }
 
+    await ensureSystemRoles();
     await ensureAccountantRolePermissions();
 
     const filter = getRoleAccessFilter(req.user) || {};
@@ -200,6 +219,8 @@ exports.createRole = async (req, res) => {
 
 exports.updateRolePermissions = async (req, res) => {
   try {
+    await ensureSystemRoles();
+
     const { roleId } = req.params;
     const { permissions } = req.body;
 

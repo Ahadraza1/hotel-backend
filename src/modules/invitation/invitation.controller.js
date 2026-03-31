@@ -29,6 +29,7 @@ const getDepartmentFromRole = (role) => {
     ACCOUNTANT: "FINANCE",
     HR_MANAGER: "HR",
     RESTAURANT_MANAGER: "RESTAURANT",
+    WAITER: "RESTAURANT",
     BRANCH_MANAGER: "MANAGEMENT",
     CHEF: "RESTAURANT",
   };

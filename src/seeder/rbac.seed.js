@@ -235,6 +235,12 @@ const seedRBAC = async () => {
           "MANAGE_POS_MENU",
         ]),
       },
+
+      // ===== WAITER =====
+      {
+        name: "Waiter",
+        permissions: [],
+      },
     ]);
 
     console.log("Enterprise RBAC Seeding Completed ✅");

@@ -312,31 +312,22 @@ exports.getBranchById = async (branchId, user) => {
   }
 
   /*
-  BRANCH LEVEL USERS
+  Branch-level users resolve access through their assigned branch instead of
+  a hardcoded role list so new roles inherit the same branch behavior.
   */
-  const branchRoles = [
-    "BRANCH_MANAGER",
-    "RECEPTIONIST",
-    "CHEF",
-    "ACCOUNTANT",
-    "HR_MANAGER",
-    "HOUSEKEEPING",
-    "RESTAURANT_MANAGER",
-  ];
+  const userBranchId = user.branchId || user.branch || user.branch_id;
 
-  if (branchRoles.includes(role)) {
-    /*
-    fallback safety
-    */
-    const userBranchId = user.branchId || user.branch || user.branch_id;
-
-    if (userBranchId && userBranchId.toString() === branch._id.toString()) {
-      const branchManager = await getBranchManagerRecord(branch);
-      return {
-        branch,
-        branchManager,
-      };
-    }
+  if (
+    userBranchId &&
+    role !== "SUPER_ADMIN" &&
+    role !== "CORPORATE_ADMIN" &&
+    userBranchId.toString() === branch._id.toString()
+  ) {
+    const branchManager = await getBranchManagerRecord(branch);
+    return {
+      branch,
+      branchManager,
+    };
   }
 
   throw new Error("Insufficient permission");

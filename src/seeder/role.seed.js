@@ -12,6 +12,7 @@ const roles = [
   "HOUSEKEEPING_LEAD",
   "FINANCE_MANAGER",
   "HR_MANAGER",
+  "WAITER",
 ];
 
 const MONGO_URI =
