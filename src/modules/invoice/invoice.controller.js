@@ -11,6 +11,7 @@ const { generateInvoicePDF } = require("./invoice.pdf");
 const Organization = require("../organization/organization.model");
 const Branch = require("../branch/branch.model");
 const POSOrder = require("../pos/posOrder.model");
+const POSSession = require("../pos/posSession.model");
 const branchSettingsService = require("../branchSettings/branchSettings.service");
 
 /*
@@ -103,12 +104,42 @@ exports.getInvoicePDF = asyncHandler(async (req, res) => {
   }
 
   let posOrder = null;
+  let posOrders = [];
+  let posSession = null;
 
   if (invoice.referenceType === "POS") {
-    posOrder = await POSOrder.findOne({ orderId: invoice.referenceId }).populate(
-      "createdBy",
-      "name email phone",
-    );
+    if (invoice.sessionId) {
+      posSession = await POSSession.findOne({
+        sessionId: invoice.sessionId,
+        branchId: req.user.branchId,
+      }).lean();
+
+      const orderQuery = {
+        sessionId: invoice.sessionId,
+        branchId: req.user.branchId,
+        isActive: true,
+      };
+
+      if (Array.isArray(invoice.orderIds) && invoice.orderIds.length) {
+        orderQuery.orderId = { $in: invoice.orderIds };
+      }
+
+      posOrders = await POSOrder.find(orderQuery)
+        .sort({ createdAt: 1 })
+        .populate("createdBy", "name email phone");
+      posOrder = posOrders[0] || null;
+    } else {
+      posOrder = await POSOrder.findOne({ orderId: invoice.referenceId }).populate(
+        "createdBy",
+        "name email phone",
+      );
+      posOrders = posOrder ? [posOrder] : [];
+    }
+
+    if (posOrder && posSession) {
+      posOrder.tableNumber = invoice.tableNo || posSession.tableNo || posOrder.tableNumber;
+      posOrder.roomNumber = invoice.roomNo || posSession.roomNo || posOrder.roomNumber;
+    }
   }
 
   const financialSettings =
@@ -116,10 +147,13 @@ exports.getInvoicePDF = asyncHandler(async (req, res) => {
       invoice.branchId,
     );
 
+  const shouldRegeneratePdf =
+    !invoice.pdfUrl || (invoice.referenceType === "POS" && Boolean(invoice.sessionId));
+
   /*
     GENERATE PDF IF MISSING
   */
-  if (!invoice.pdfUrl) {
+  if (shouldRegeneratePdf) {
     const organization = await Organization.findOne({
       organizationId: invoice.organizationId,
     });
@@ -137,6 +171,7 @@ exports.getInvoicePDF = asyncHandler(async (req, res) => {
         booking: invoice.bookingId,
         financialSettings,
         posOrder,
+        posOrders,
       },
     );
 
@@ -167,6 +202,7 @@ exports.getInvoicePDF = asyncHandler(async (req, res) => {
         booking: invoice.bookingId,
         financialSettings,
         posOrder,
+        posOrders,
       },
     );
 

@@ -8,6 +8,61 @@ const requirePermission = require("../../middleware/requirePermission.middleware
 
 /*
   ===========================
+  SESSION ROUTES
+  ===========================
+*/
+
+router.post(
+  "/sessions",
+  requireAuth,
+  requirePermission("ACCESS_POS"),
+  posController.openSession
+);
+
+router.get(
+  "/sessions",
+  requireAuth,
+  requirePermission(["ACCESS_POS", "VIEW_POS_MENU"]),
+  posController.getSessions
+);
+
+router.get(
+  "/sessions/:sessionId",
+  requireAuth,
+  requirePermission(["ACCESS_POS", "VIEW_POS_MENU"]),
+  posController.getSessionById
+);
+
+router.patch(
+  "/sessions/:sessionId/guest",
+  requireAuth,
+  requirePermission("ACCESS_POS"),
+  posController.updateSessionGuestName
+);
+
+router.post(
+  "/sessions/:sessionId/generate-bill",
+  requireAuth,
+  requirePermission("ACCESS_POS"),
+  posController.generateBill
+);
+
+router.patch(
+  "/sessions/:sessionId/transfer",
+  requireAuth,
+  requirePermission("ACCESS_POS"),
+  posController.transferSession
+);
+
+router.patch(
+  "/sessions/:sessionId/pay",
+  requireAuth,
+  requirePermission("ACCESS_POS"),
+  posController.paySessionInvoice
+);
+
+/*
+  ===========================
   CATEGORY ROUTES
   ===========================
 */

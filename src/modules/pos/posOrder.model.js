@@ -56,6 +56,18 @@ const orderItemSchema = new mongoose.Schema(
 
 const posOrderSchema = new mongoose.Schema(
 {
+  sessionId: {
+    type: String,
+    required: true,
+    index: true,
+  },
+
+  sessionRef: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "POSSession",
+    required: true,
+    index: true,
+  },
 
   /* 🔥 UNIQUE ORDER ID (FIX DUPLICATE ERROR) */
   orderId: {
@@ -104,6 +116,11 @@ const posOrderSchema = new mongoose.Schema(
     ref: "Room",
     default: null,
     index: true,
+  },
+
+  roomNumber: {
+    type: String,
+    default: null,
   },
 
   bookingId: {
@@ -173,6 +190,7 @@ const posOrderSchema = new mongoose.Schema(
   orderStatus: {
     type: String,
     enum: [
+      "PLACED",
       "OPEN",
       "PREPARING",
       "READY",
@@ -181,7 +199,7 @@ const posOrderSchema = new mongoose.Schema(
       "IN_PROGRESS",
       "CANCELLED",
     ],
-    default: "OPEN",
+    default: "PLACED",
     index: true,
   },
 

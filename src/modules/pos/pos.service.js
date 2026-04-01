@@ -1,5 +1,6 @@
 const POSItem = require("./posItem.model");
 const POSOrder = require("./posOrder.model");
+const POSSession = require("./posSession.model");
 const Invoice = require("../invoice/invoice.model");
 const { getIO } = require("../../config/socket");
 const POSCategory = require("./posCategory.model");
@@ -1088,4 +1089,1215 @@ exports.getKitchenOrders = async (user) => {
       ),
     }))
     .filter((order) => order.items.length > 0);
+};
+
+const SESSION_ACTIVE_STATUSES = ["OPEN", "BILL_REQUESTED", "PAID"];
+const SESSION_KITCHEN_ORDER_STATUSES = ["PLACED", "PREPARING", "READY"];
+const SESSION_ORDER_ACTIVE_STATUSES = [
+  "PLACED",
+  "OPEN",
+  "PREPARING",
+  "READY",
+  "SERVED",
+  "IN_PROGRESS",
+];
+
+const normalizeSessionOrderStatus = (status) => {
+  if (!status) return "PLACED";
+
+  const normalized = String(status).toUpperCase();
+
+  if (normalized === "OPEN") return "PLACED";
+  if (normalized === "IN_PROGRESS") return "PREPARING";
+  if (normalized === "COMPLETED") return "SERVED";
+
+  return normalized;
+};
+
+const normalizeSessionStatus = (status) => {
+  const normalized = String(status || "OPEN").toUpperCase();
+  return ["OPEN", "BILL_REQUESTED", "PAID", "CLOSED"].includes(normalized)
+    ? normalized
+    : "OPEN";
+};
+
+const emitSessionUpdate = (branchId, payload) => {
+  const io = getIO();
+  io.to(`branch_${branchId}`).emit("session-updated", payload);
+  io.to(`branch-${branchId}`).emit("session-updated", payload);
+};
+
+const syncTableOccupancyFromSessions = async (tableId, dbSession = null) => {
+  if (!tableId) return null;
+
+  const existsQuery = POSSession.exists({
+    tableId,
+    status: { $in: SESSION_ACTIVE_STATUSES },
+    isActive: true,
+  });
+
+  if (dbSession) {
+    existsQuery.session(dbSession);
+  }
+
+  const isOccupied = await existsQuery;
+  const updateOptions = dbSession ? { new: true, session: dbSession } : { new: true };
+
+  return POSTable.findByIdAndUpdate(
+    tableId,
+    { status: isOccupied ? "OCCUPIED" : "AVAILABLE" },
+    updateOptions,
+  );
+};
+
+const deriveSessionOrderStatusFromItems = (items = []) => {
+  if (!items.length) return "PLACED";
+
+  const statuses = items.map((item) => String(item.kitchenStatus || "PENDING").toUpperCase());
+
+  if (statuses.every((status) => status === "SERVED")) return "SERVED";
+  if (statuses.every((status) => status === "READY" || status === "SERVED")) return "READY";
+  if (statuses.some((status) => status === "PREPARING")) return "PREPARING";
+  return "PLACED";
+};
+
+const mergeSessionItems = (orders = []) => {
+  const mergedMap = new Map();
+
+  for (const order of orders) {
+    for (const item of order.items || []) {
+      const key = [
+        item.itemId,
+        item.nameSnapshot || "Menu Item",
+        Number(item.priceSnapshot || 0),
+      ].join("|");
+
+      const existing = mergedMap.get(key);
+
+      if (existing) {
+        existing.quantity += Number(item.quantity || 0);
+        existing.total += Number(item.totalItemAmount || 0);
+      } else {
+        mergedMap.set(key, {
+          itemId: item.itemId,
+          description: item.nameSnapshot || "Menu Item",
+          quantity: Number(item.quantity || 0),
+          unitPrice: Number(item.priceSnapshot || 0),
+          total: Number(item.totalItemAmount || 0),
+        });
+      }
+    }
+  }
+
+  return Array.from(mergedMap.values()).map((item) => ({
+    ...item,
+    total: roundCurrency(item.total),
+  }));
+};
+
+const buildSessionSummary = (sessionRecord, orders = [], invoice = null) => ({
+  ...(typeof sessionRecord.toObject === "function" ? sessionRecord.toObject() : sessionRecord),
+  orders,
+  orderCount: orders.length,
+  runningTotal: roundCurrency(
+    orders
+      .filter((order) => order.orderStatus !== "CANCELLED")
+      .reduce((sum, order) => sum + Number(order.grandTotal || 0), 0),
+  ),
+  invoice,
+});
+
+const getSessionOrders = async (sessionId, branchId) =>
+  POSOrder.find({
+    sessionId,
+    branchId,
+    isActive: true,
+  })
+    .sort({ createdAt: 1 })
+    .populate("tableId", "name tableNumber")
+    .populate("roomId", "roomNumber")
+    .lean();
+
+const resolvePOSSessionTarget = async ({ data, branchId, dbSession = null }) => {
+  const normalizedType = String(data.type || data.orderType || "").toUpperCase();
+
+  if (!["DINE_IN", "ROOM_SERVICE", "TAKEAWAY"].includes(normalizedType)) {
+    throw new Error("Invalid session/order type");
+  }
+
+  let selectedTable = null;
+  let selectedRoom = null;
+  let activeBooking = null;
+
+  if (normalizedType === "DINE_IN") {
+    const tableQuery = data.tableId
+      ? { _id: data.tableId, branchId, isActive: true }
+      : {
+          branchId,
+          isActive: true,
+          $or: [{ tableNumber: data.tableNo || data.tableNumber }, { name: data.tableNo || data.tableNumber }],
+        };
+
+    const query = POSTable.findOne(tableQuery);
+
+    if (dbSession) {
+      query.session(dbSession);
+    }
+
+    selectedTable = await query;
+
+    if (!selectedTable) {
+      throw new Error("Selected table not found");
+    }
+  }
+
+  if (normalizedType === "ROOM_SERVICE") {
+    if (!data.roomId || !mongoose.Types.ObjectId.isValid(data.roomId)) {
+      throw new Error("Checked-in room selection is required");
+    }
+
+    const roomQuery = Room.findOne({
+      _id: data.roomId,
+      branchId,
+      isActive: true,
+    });
+
+    if (dbSession) {
+      roomQuery.session(dbSession);
+    }
+
+    selectedRoom = await roomQuery;
+
+    if (!selectedRoom) {
+      throw new Error("Selected room not found");
+    }
+
+    if (data.bookingId) {
+      const bookingQuery = Booking.findOne({
+        bookingId: data.bookingId,
+        roomId: selectedRoom._id,
+        branchId,
+        status: "CHECKED_IN",
+        isActive: true,
+      });
+
+      if (dbSession) {
+        bookingQuery.session(dbSession);
+      }
+
+      activeBooking = await bookingQuery;
+    }
+
+    activeBooking =
+      activeBooking ||
+      (await resolveCheckedInBookingForRoom(selectedRoom._id, branchId, dbSession));
+
+    if (!activeBooking) {
+      throw new Error("Only checked-in rooms can be used for room service");
+    }
+  }
+
+  if (normalizedType === "TAKEAWAY") {
+    return {
+      type: normalizedType,
+      selectedTable: null,
+      selectedRoom: null,
+      activeBooking: null,
+      tableNo: null,
+      roomNo: null,
+      guestName: String(data.guestName || "").trim(),
+    };
+  }
+
+  return {
+    type: normalizedType,
+    selectedTable,
+    selectedRoom,
+    activeBooking,
+    tableNo: selectedTable?.tableNumber || selectedTable?.name || data.tableNo || data.tableNumber || null,
+    roomNo: selectedRoom?.roomNumber || data.roomNo || null,
+    guestName: String(data.guestName || activeBooking?.guestName || "").trim(),
+  };
+};
+
+const ensureOpenSessionRecord = async ({ data, user, dbSession = null }) => {
+  const { organizationId, branchId } = await resolveOrganizationContext(user);
+
+  if (data.sessionId) {
+    const sessionQuery = POSSession.findOne({
+      sessionId: data.sessionId,
+      branchId,
+      status: "OPEN",
+      isActive: true,
+    });
+
+    if (dbSession) {
+      sessionQuery.session(dbSession);
+    }
+
+    const existingById = await sessionQuery;
+
+    if (!existingById) {
+      throw new Error("Open session not found");
+    }
+
+    return existingById;
+  }
+
+  const target = await resolvePOSSessionTarget({ data, branchId, dbSession });
+  const existingQuery = POSSession.findOne({
+    branchId,
+    type: target.type,
+    status: "OPEN",
+    isActive: true,
+    ...(target.type === "DINE_IN"
+      ? { tableId: target.selectedTable?._id || null }
+      : target.type === "ROOM_SERVICE"
+        ? { roomId: target.selectedRoom?._id || null }
+        : { _id: null }),
+  }).sort({ createdAt: -1 });
+
+  if (dbSession) {
+    existingQuery.session(dbSession);
+  }
+
+  const existingSession =
+    target.type === "TAKEAWAY" ? null : await existingQuery;
+
+  if (existingSession) {
+    if (target.guestName && target.guestName !== existingSession.guestName) {
+      existingSession.guestName = target.guestName;
+      existingSession.updatedBy = user._id;
+      await existingSession.save({ session: dbSession || undefined });
+    }
+
+    return existingSession;
+  }
+
+  const createdSessions = await POSSession.create(
+    [
+      {
+        organizationId,
+        branchId,
+        type: target.type,
+        tableId: target.selectedTable?._id || null,
+        tableNo: target.tableNo,
+        roomId: target.selectedRoom?._id || null,
+        roomNo: target.roomNo,
+        bookingId: target.activeBooking?.bookingId || data.bookingId || null,
+        guestName: target.guestName,
+        status: "OPEN",
+        createdBy: user._id,
+        updatedBy: user._id,
+      },
+    ],
+    dbSession ? { session: dbSession } : undefined,
+  );
+
+  const sessionRecord = createdSessions[0];
+
+  if (sessionRecord.tableId) {
+    await syncTableOccupancyFromSessions(sessionRecord.tableId, dbSession);
+  }
+
+  return sessionRecord;
+};
+
+const createSessionInvoice = async ({
+  sessionRecord,
+  orders,
+  user,
+  dbSession = null,
+}) => {
+  if (sessionRecord.invoiceId) {
+    const invoiceQuery = Invoice.findOne({
+      invoiceId: sessionRecord.invoiceId,
+      branchId: sessionRecord.branchId,
+      isActive: true,
+    });
+
+    if (dbSession) {
+      invoiceQuery.session(dbSession);
+    }
+
+    const existingInvoice = await invoiceQuery;
+
+    if (existingInvoice) {
+      return existingInvoice;
+    }
+  }
+
+  if (!orders.length) {
+    throw new Error("No orders found for this session");
+  }
+
+  const booking = sessionRecord.bookingId
+    ? await Booking.findOne({
+        bookingId: sessionRecord.bookingId,
+        branchId: sessionRecord.branchId,
+        isActive: true,
+      })
+        .select("_id guestName")
+        .lean()
+    : null;
+
+  const billableOrders = orders.filter((order) => order.orderStatus !== "CANCELLED");
+
+  if (!billableOrders.length) {
+    throw new Error("No billable orders found for this session");
+  }
+
+  const totalAmount = roundCurrency(
+    billableOrders.reduce((sum, order) => sum + Number(order.subTotal || 0), 0),
+  );
+  const taxAmount = roundCurrency(
+    billableOrders.reduce((sum, order) => sum + Number(order.totalTax || 0), 0),
+  );
+  const serviceChargeAmount = roundCurrency(
+    billableOrders.reduce((sum, order) => sum + Number(order.totalServiceCharge || 0), 0),
+  );
+  const discountAmount = roundCurrency(
+    billableOrders.reduce((sum, order) => sum + Number(order.discountAmount || 0), 0),
+  );
+  const finalAmount = roundCurrency(
+    billableOrders.reduce((sum, order) => sum + Number(order.grandTotal || 0), 0),
+  );
+
+  const payload = {
+    organizationId: sessionRecord.organizationId,
+    branchId: sessionRecord.branchId,
+    bookingId: booking?._id || null,
+    guestName: sessionRecord.guestName || booking?.guestName || "",
+    sessionId: sessionRecord.sessionId,
+    orderIds: billableOrders.map((order) => order.orderId),
+    tableNo: sessionRecord.tableNo || null,
+    roomNo: sessionRecord.roomNo || null,
+    orderType: sessionRecord.type,
+    type: "RESTAURANT",
+    referenceType: "POS",
+    referenceId: sessionRecord.sessionId,
+    lineItems: mergeSessionItems(billableOrders).map((item) => ({
+      description: item.description,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice,
+      total: item.total,
+    })),
+    totalAmount,
+    taxAmount,
+    serviceChargeAmount,
+    discountAmount,
+    finalAmount,
+    paidAmount: 0,
+    dueAmount: finalAmount,
+    status: "PENDING",
+    createdBy: user._id,
+    updatedBy: user._id,
+  };
+
+  const invoice = dbSession
+    ? (await Invoice.create([payload], { session: dbSession }))[0]
+    : await Invoice.create(payload);
+
+  await POSOrder.updateMany(
+    { sessionId: sessionRecord.sessionId, branchId: sessionRecord.branchId, isActive: true },
+    { $set: { invoiceLinked: true, invoiceId: invoice.invoiceId } },
+    dbSession ? { session: dbSession } : undefined,
+  );
+
+  sessionRecord.invoiceId = invoice.invoiceId;
+  sessionRecord.status = "BILL_REQUESTED";
+  sessionRecord.updatedBy = user._id;
+  await sessionRecord.save({ session: dbSession || undefined });
+
+  return invoice;
+};
+
+exports.openSession = async (data, user) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const dbSession = await mongoose.startSession();
+  dbSession.startTransaction();
+
+  try {
+    const sessionRecord = await ensureOpenSessionRecord({ data, user, dbSession });
+
+    await dbSession.commitTransaction();
+    dbSession.endSession();
+
+    const orders = await getSessionOrders(sessionRecord.sessionId, sessionRecord.branchId);
+    const response = buildSessionSummary(sessionRecord, orders);
+    emitSessionUpdate(sessionRecord.branchId, response);
+    return response;
+  } catch (error) {
+    await dbSession.abortTransaction();
+    dbSession.endSession();
+    throw error;
+  }
+};
+
+exports.getSessions = async (user, filters = {}) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const { organizationId, branchId } = await resolveOrganizationContext(user);
+  const query = {
+    organizationId,
+    branchId,
+    isActive: true,
+  };
+
+  if (filters.status) {
+    query.status = normalizeSessionStatus(filters.status);
+  }
+
+  if (filters.type) {
+    query.type = String(filters.type).toUpperCase();
+  }
+
+  const sessions = await POSSession.find(query).sort({ createdAt: -1 });
+  const sessionIds = sessions.map((entry) => entry.sessionId);
+  const orders = sessionIds.length
+    ? await POSOrder.find({
+        sessionId: { $in: sessionIds },
+        branchId,
+        isActive: true,
+      })
+        .sort({ createdAt: 1 })
+        .lean()
+    : [];
+
+  const ordersBySessionId = orders.reduce((map, order) => {
+    const key = String(order.sessionId);
+    if (!map.has(key)) {
+      map.set(key, []);
+    }
+    map.get(key).push(order);
+    return map;
+  }, new Map());
+
+  return sessions.map((entry) =>
+    buildSessionSummary(entry, ordersBySessionId.get(String(entry.sessionId)) || []),
+  );
+};
+
+exports.getSessionById = async (sessionId, user) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const { branchId } = await resolveOrganizationContext(user);
+  const sessionRecord = await POSSession.findOne({
+    sessionId,
+    branchId,
+    isActive: true,
+  });
+
+  if (!sessionRecord) {
+    throw new Error("Session not found");
+  }
+
+  const [orders, invoice] = await Promise.all([
+    getSessionOrders(sessionId, branchId),
+    sessionRecord.invoiceId
+      ? Invoice.findOne({
+          invoiceId: sessionRecord.invoiceId,
+          branchId,
+          isActive: true,
+        }).lean()
+      : null,
+  ]);
+
+  return buildSessionSummary(sessionRecord, orders, invoice);
+};
+
+exports.updateSessionGuestName = async (sessionId, guestName, user) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const { branchId } = await resolveOrganizationContext(user);
+  const sessionRecord = await POSSession.findOne({
+    sessionId,
+    branchId,
+    isActive: true,
+  });
+
+  if (!sessionRecord) {
+    throw new Error("Session not found");
+  }
+
+  sessionRecord.guestName = String(guestName || "").trim();
+  sessionRecord.updatedBy = user._id;
+  await sessionRecord.save();
+
+  await POSOrder.updateMany(
+    { sessionId, branchId, isActive: true },
+    { $set: { guestName: sessionRecord.guestName } },
+  );
+
+  const response = await exports.getSessionById(sessionId, user);
+  emitSessionUpdate(branchId, response);
+  return response;
+};
+
+exports.transferSession = async (sessionId, data, user) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const { branchId } = await resolveOrganizationContext(user);
+  const dbSession = await mongoose.startSession();
+  dbSession.startTransaction();
+
+  try {
+    const sessionRecord = await POSSession.findOne({
+      sessionId,
+      branchId,
+      isActive: true,
+      status: "OPEN",
+    }).session(dbSession);
+
+    if (!sessionRecord) {
+      throw new Error("Open session not found");
+    }
+
+    const previousTableId = sessionRecord.tableId ? String(sessionRecord.tableId) : null;
+
+    if (sessionRecord.type === "DINE_IN") {
+      if (!data.tableId) {
+        throw new Error("Target table is required");
+      }
+
+      const target = await resolvePOSSessionTarget({
+        data: { type: "DINE_IN", tableId: data.tableId, tableNo: data.tableNo },
+        branchId,
+        dbSession,
+      });
+
+      sessionRecord.tableId = target.selectedTable?._id || null;
+      sessionRecord.tableNo = target.tableNo;
+    } else if (sessionRecord.type === "ROOM_SERVICE") {
+      if (!data.roomId) {
+        throw new Error("Target room is required");
+      }
+
+      const target = await resolvePOSSessionTarget({
+        data: { type: "ROOM_SERVICE", roomId: data.roomId, bookingId: data.bookingId },
+        branchId,
+        dbSession,
+      });
+
+      sessionRecord.roomId = target.selectedRoom?._id || null;
+      sessionRecord.roomNo = target.roomNo;
+      sessionRecord.bookingId = target.activeBooking?.bookingId || null;
+      sessionRecord.guestName = target.guestName || sessionRecord.guestName;
+    } else {
+      throw new Error("Transfer is not supported for takeaway sessions");
+    }
+
+    sessionRecord.updatedBy = user._id;
+    await sessionRecord.save({ session: dbSession });
+
+    await POSOrder.updateMany(
+      { sessionId, branchId, isActive: true },
+      {
+        $set: {
+          tableId: sessionRecord.tableId || null,
+          tableNumber: sessionRecord.tableNo || null,
+          roomId: sessionRecord.roomId || null,
+          roomNumber: sessionRecord.roomNo || null,
+          bookingId: sessionRecord.bookingId || null,
+          guestName: sessionRecord.guestName || "",
+        },
+      },
+      { session: dbSession },
+    );
+
+    if (previousTableId && previousTableId !== String(sessionRecord.tableId || "")) {
+      await syncTableOccupancyFromSessions(previousTableId, dbSession);
+    }
+
+    if (sessionRecord.tableId) {
+      await syncTableOccupancyFromSessions(sessionRecord.tableId, dbSession);
+    }
+
+    await dbSession.commitTransaction();
+    dbSession.endSession();
+
+    const response = await exports.getSessionById(sessionId, user);
+    emitSessionUpdate(branchId, response);
+    return response;
+  } catch (error) {
+    await dbSession.abortTransaction();
+    dbSession.endSession();
+    throw error;
+  }
+};
+
+exports.generateBill = async (sessionId, user) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const { branchId } = await resolveOrganizationContext(user);
+  const dbSession = await mongoose.startSession();
+  dbSession.startTransaction();
+
+  try {
+    const sessionRecord = await POSSession.findOne({
+      sessionId,
+      branchId,
+      isActive: true,
+      status: { $in: ["OPEN", "BILL_REQUESTED"] },
+    }).session(dbSession);
+
+    if (!sessionRecord) {
+      throw new Error("Open session not found");
+    }
+
+    const orders = await POSOrder.find({
+      sessionId,
+      branchId,
+      isActive: true,
+      orderStatus: { $ne: "CANCELLED" },
+    })
+      .sort({ createdAt: 1 })
+      .session(dbSession);
+
+    if (!orders.length) {
+      throw new Error("No served orders found for this session");
+    }
+
+    const allServed = orders.every(
+      (order) => String(order.orderStatus || "").toUpperCase() === "SERVED",
+    );
+
+    if (!allServed) {
+      throw new Error("All session orders must be served before billing");
+    }
+
+    const invoice = await createSessionInvoice({
+      sessionRecord,
+      orders,
+      user,
+      dbSession,
+    });
+
+    await dbSession.commitTransaction();
+    dbSession.endSession();
+
+    await notificationService.createNotificationSafely({
+      title: "Restaurant invoice generated",
+      message: `Invoice ${invoice.invoiceId} was generated for session ${sessionId}.`,
+      type: "invoice",
+      organizationId: sessionRecord.organizationId,
+      branchId: sessionRecord.branchId,
+      module: "FINANCE",
+    });
+
+    emitSessionUpdate(branchId, await exports.getSessionById(sessionId, user));
+    return invoice;
+  } catch (error) {
+    await dbSession.abortTransaction();
+    dbSession.endSession();
+    throw error;
+  }
+};
+
+exports.paySessionInvoice = async (sessionId, paymentMethod, user) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const { branchId } = await resolveOrganizationContext(user);
+  const dbSession = await mongoose.startSession();
+  dbSession.startTransaction();
+
+  try {
+    const sessionRecord = await POSSession.findOne({
+      sessionId,
+      branchId,
+      isActive: true,
+    }).session(dbSession);
+
+    if (!sessionRecord) {
+      throw new Error("Session not found");
+    }
+
+    const invoice = await Invoice.findOne({
+      invoiceId: sessionRecord.invoiceId,
+      branchId,
+      isActive: true,
+    }).session(dbSession);
+
+    if (!invoice) {
+      throw new Error("Invoice not found");
+    }
+
+    const amount = Number(invoice.dueAmount ?? invoice.finalAmount ?? 0);
+
+    invoice.paidAmount = Number(invoice.finalAmount || 0);
+    invoice.dueAmount = 0;
+    invoice.status = "PAID";
+    invoice.updatedBy = user._id;
+    invoice.paymentHistory.push({
+      amount,
+      method: paymentMethod,
+      recordedBy: user._id,
+      paidAt: new Date(),
+    });
+    await invoice.save({ session: dbSession });
+
+    sessionRecord.status = "CLOSED";
+    sessionRecord.updatedBy = user._id;
+    await sessionRecord.save({ session: dbSession });
+
+    await POSOrder.updateMany(
+      { sessionId, branchId, isActive: true },
+      { $set: { paymentStatus: "PAID", paymentMethod } },
+      { session: dbSession },
+    );
+
+    if (sessionRecord.tableId) {
+      await syncTableOccupancyFromSessions(sessionRecord.tableId, dbSession);
+    }
+
+    await dbSession.commitTransaction();
+    dbSession.endSession();
+
+    emitSessionUpdate(branchId, await exports.getSessionById(sessionId, user));
+    return invoice;
+  } catch (error) {
+    await dbSession.abortTransaction();
+    dbSession.endSession();
+    throw error;
+  }
+};
+
+exports.createOrder = async (data, user) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const { items, discountAmount: incomingDiscountAmount = 0, discountPercentage: incomingDiscountPercentage = 0 } = data;
+
+  if (!items || !items.length) {
+    throw new Error("Order must contain items");
+  }
+
+  const { organizationId, branchId } = await resolveOrganizationContext(user);
+  const branch = await Branch.findById(branchId).select("name").lean();
+
+  if (!branch) {
+    throw new Error("Branch not found");
+  }
+
+  const branchPrefix = String(branch.name || "BR")
+    .split(" ")
+    .map((word) => word[0])
+    .join("")
+    .toUpperCase() || "BR";
+
+  const financialSettings = await branchSettingsService.getFinancialSettingsByBranchId(branchId);
+
+  let subTotal = 0;
+  const orderItems = [];
+
+  for (const item of items) {
+    const menuItem = await POSItem.findOne({ itemId: item.itemId });
+
+    if (!menuItem || !menuItem.isAvailable) {
+      throw new Error("Item not available");
+    }
+
+    const itemTotal = roundCurrency(Number(menuItem.price || 0) * Number(item.quantity || 0));
+    subTotal += itemTotal;
+
+    orderItems.push({
+      itemId: menuItem.itemId,
+      nameSnapshot: menuItem.name,
+      priceSnapshot: menuItem.price,
+      taxPercentageSnapshot: financialSettings.taxPercentage,
+      serviceChargePercentageSnapshot: financialSettings.serviceChargePercentage,
+      quantity: Number(item.quantity || 0),
+      totalItemAmount: itemTotal,
+      kitchenStatus: "PENDING",
+      kitchenStation: menuItem.kitchenStation || "MAIN_KITCHEN",
+    });
+  }
+
+  const discountAmount = Math.max(Number(incomingDiscountAmount || 0), 0);
+  const discountPercentage = Math.max(Number(incomingDiscountPercentage || 0), 0);
+  const taxableBase = Math.max(subTotal - discountAmount, 0);
+  const totalTax = roundCurrency(
+    (taxableBase * Number(financialSettings.taxPercentage || 0)) / 100,
+  );
+  const totalServiceCharge = roundCurrency(
+    (taxableBase * Number(financialSettings.serviceChargePercentage || 0)) / 100,
+  );
+  const grandTotal = roundCurrency(taxableBase + totalTax + totalServiceCharge);
+
+  const dbSession = await mongoose.startSession();
+  dbSession.startTransaction();
+
+  try {
+    const sessionRecord = await ensureOpenSessionRecord({ data, user, dbSession });
+    const lastOrder = await POSOrder.findOne({ branchId })
+      .sort({ orderNumber: -1 })
+      .select("orderNumber")
+      .session(dbSession)
+      .lean();
+    const nextOrderNumber = lastOrder ? lastOrder.orderNumber + 1 : 1;
+
+    const createdOrders = await POSOrder.create(
+      [
+        {
+          sessionId: sessionRecord.sessionId,
+          sessionRef: sessionRecord._id,
+          orderNumber: nextOrderNumber,
+          orderCode: `${branchPrefix}-${String(nextOrderNumber).padStart(3, "0")}`,
+          organizationId,
+          branchId,
+          tableId: sessionRecord.tableId || null,
+          tableNumber: sessionRecord.tableNo || null,
+          roomId: sessionRecord.roomId || null,
+          roomNumber: sessionRecord.roomNo || null,
+          bookingId: sessionRecord.bookingId || null,
+          guestName: sessionRecord.guestName || "",
+          orderType: sessionRecord.type,
+          items: orderItems,
+          subTotal,
+          totalTax,
+          totalServiceCharge,
+          discountAmount,
+          discountPercentage,
+          grandTotal,
+          orderStatus: "PLACED",
+          createdBy: user._id,
+        },
+      ],
+      { session: dbSession },
+    );
+
+    const order = createdOrders[0];
+
+    if (sessionRecord.tableId) {
+      await syncTableOccupancyFromSessions(sessionRecord.tableId, dbSession);
+    }
+
+    await dbSession.commitTransaction();
+    dbSession.endSession();
+
+    emitOrderUpdate("new-order", branchId, order);
+    emitSessionUpdate(branchId, await exports.getSessionById(sessionRecord.sessionId, user));
+
+    await notificationService.createNotificationSafely({
+      title: "New POS order created",
+      message: `Order ${order.orderCode} was created for branch ${branch.name}.`,
+      type: "pos",
+      organizationId,
+      branchId,
+      module: "POS",
+    });
+
+    return order;
+  } catch (error) {
+    await dbSession.abortTransaction();
+    dbSession.endSession();
+    throw error;
+  }
+};
+
+exports.updateKitchenStatus = async (orderId, itemId, status, user) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const normalizedStatus = String(status || "").toUpperCase();
+
+  if (!["PENDING", "PREPARING", "READY", "SERVED"].includes(normalizedStatus)) {
+    throw new Error("Invalid kitchen status");
+  }
+
+  let order = await POSOrder.findOne({ orderId });
+
+  if (!order && mongoose.Types.ObjectId.isValid(orderId)) {
+    order = await POSOrder.findById(orderId);
+  }
+
+  if (!order) {
+    throw new Error("Order not found");
+  }
+
+  const item = order.items.find((entry) => entry.itemId === itemId);
+
+  if (!item) {
+    throw new Error("Item not found in order");
+  }
+
+  item.kitchenStatus = normalizedStatus;
+  order.orderStatus = deriveSessionOrderStatusFromItems(order.items);
+  await order.save();
+
+  emitOrderUpdate("order-updated", order.branchId, order);
+  return order;
+};
+
+exports.completeOrder = async (orderId, user) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const order = await POSOrder.findOne({ orderId });
+
+  if (!order) {
+    throw new Error("Order not found");
+  }
+
+  order.items.forEach((item) => {
+    item.kitchenStatus = "SERVED";
+  });
+  order.orderStatus = "SERVED";
+  await order.save();
+
+  emitOrderUpdate("order-updated", order.branchId, order);
+  return order;
+};
+
+exports.updateOrderStatus = async (orderId, status, user) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const normalizedStatus = normalizeSessionOrderStatus(status);
+  const allowedStatuses = ["PLACED", "PREPARING", "READY", "SERVED", "CANCELLED"];
+
+  if (!allowedStatuses.includes(normalizedStatus)) {
+    throw new Error("Invalid order status");
+  }
+
+  let order = await POSOrder.findOne({ orderId });
+
+  if (!order && mongoose.Types.ObjectId.isValid(orderId)) {
+    order = await POSOrder.findById(orderId);
+  }
+
+  if (!order) {
+    throw new Error("Order not found");
+  }
+
+  order.orderStatus = normalizedStatus;
+
+  if (normalizedStatus === "PLACED") {
+    order.items.forEach((item) => {
+      item.kitchenStatus = "PENDING";
+    });
+  }
+
+  if (normalizedStatus === "PREPARING") {
+    order.items.forEach((item) => {
+      if (item.kitchenStatus === "PENDING") {
+        item.kitchenStatus = "PREPARING";
+      }
+    });
+  }
+
+  if (normalizedStatus === "READY") {
+    order.items.forEach((item) => {
+      if (item.kitchenStatus === "PENDING" || item.kitchenStatus === "PREPARING") {
+        item.kitchenStatus = "READY";
+      }
+    });
+  }
+
+  if (normalizedStatus === "SERVED") {
+    order.items.forEach((item) => {
+      item.kitchenStatus = "SERVED";
+    });
+  }
+
+  await order.save();
+  emitOrderUpdate("order-updated", order.branchId, order);
+  return order;
+};
+
+exports.payOrder = async (orderId, paymentMethod, user) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const order = await POSOrder.findOne({ orderId });
+
+  if (!order) {
+    throw new Error("Order not found");
+  }
+
+  order.paymentStatus = "PAID";
+  order.paymentMethod = paymentMethod;
+  await order.save();
+
+  emitOrderUpdate("order-updated", order.branchId, order);
+  return order;
+};
+
+exports.getTables = async (user, filters = {}) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const { organizationId, branchId } = await resolveOrganizationContext(user);
+  const targetBranchId = filters.branchId || branchId;
+  const tables = await POSTable.find({
+    organizationId,
+    branchId: targetBranchId,
+    isActive: true,
+  }).sort({ displayOrder: 1 });
+
+  const occupiedSessions = await POSSession.find({
+    branchId: targetBranchId,
+    tableId: { $in: tables.map((table) => table._id) },
+    status: { $in: SESSION_ACTIVE_STATUSES },
+    isActive: true,
+  })
+    .select("tableId")
+    .lean();
+
+  const occupiedTableIds = new Set(occupiedSessions.map((entry) => String(entry.tableId)));
+
+  return tables.map((table) => ({
+    ...table.toObject(),
+    tableNumber: table.tableNumber || table.name,
+    status: occupiedTableIds.has(String(table._id)) ? "OCCUPIED" : "AVAILABLE",
+  }));
+};
+
+exports.getOrders = async (user, filters = {}) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const { organizationId, branchId } = await resolveOrganizationContext(user);
+  const query = {
+    organizationId,
+    branchId,
+    isActive: true,
+  };
+
+  if (filters.status) {
+    query.orderStatus =
+      String(filters.status).toUpperCase() === "ACTIVE"
+        ? { $in: SESSION_ORDER_ACTIVE_STATUSES }
+        : normalizeSessionOrderStatus(filters.status);
+  }
+
+  if (filters.type) {
+    query.orderType = String(filters.type).toUpperCase();
+  }
+
+  if (filters.sessionId) {
+    query.sessionId = filters.sessionId;
+  }
+
+  return POSOrder.find(query)
+    .sort({ createdAt: -1 })
+    .populate("tableId", "name tableNumber")
+    .populate("roomId", "roomNumber")
+    .lean();
+};
+
+exports.getKitchenOrders = async (user) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const { organizationId, branchId } = await resolveOrganizationContext(user);
+  const orders = await POSOrder.find({
+    organizationId,
+    branchId,
+    orderStatus: { $in: SESSION_KITCHEN_ORDER_STATUSES },
+    isActive: true,
+  })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  const kitchenOrders = orders
+    .map((order) => ({
+      ...order,
+      items: (order.items || []).filter((item) =>
+        ["PENDING", "PREPARING", "READY"].includes(
+          String(item.kitchenStatus || "").toUpperCase(),
+        ),
+      ),
+    }))
+    .filter((order) => order.items.length > 0);
+
+  if (!kitchenOrders.length) {
+    return [];
+  }
+
+  const sessionIds = [...new Set(kitchenOrders.map((order) => order.sessionId).filter(Boolean))];
+  const sessions = await POSSession.find({
+    sessionId: { $in: sessionIds },
+    branchId,
+    isActive: true,
+  })
+    .select("sessionId type tableNo roomNo")
+    .lean();
+
+  const sessionMap = new Map(
+    sessions.map((sessionRecord) => [String(sessionRecord.sessionId), sessionRecord]),
+  );
+
+  const groups = new Map();
+
+  for (const order of kitchenOrders) {
+    const sessionRecord = sessionMap.get(String(order.sessionId));
+
+    if (!sessionRecord) {
+      continue;
+    }
+
+    const sessionType = String(sessionRecord.type || "").toUpperCase();
+    const tableNo = sessionRecord.tableNo ? String(sessionRecord.tableNo).trim() : "";
+    const roomNo = sessionRecord.roomNo ? String(sessionRecord.roomNo).trim() : "";
+
+    let groupType = "";
+    let groupValue = "";
+
+    if (sessionType === "DINE_IN" && tableNo) {
+      groupType = "TABLE";
+      groupValue = tableNo;
+    } else if (sessionType === "ROOM_SERVICE" && roomNo) {
+      groupType = "ROOM";
+      groupValue = roomNo;
+    } else if (sessionType === "TAKEAWAY") {
+      groupType = "TAKEAWAY";
+      groupValue = String(order.guestName || order.sessionId || "Takeaway").trim();
+    } else {
+      continue;
+    }
+
+    const groupKey = `${groupType}:${groupValue}`;
+    const groupLabel =
+      groupType === "TABLE"
+        ? `Table ${groupValue}`
+        : groupType === "ROOM"
+          ? `Room ${groupValue}`
+          : groupValue || "Takeaway";
+    const orderWithSession = {
+      ...order,
+      status: order.orderStatus,
+      session: {
+        type: sessionType,
+        tableNo: tableNo || null,
+        roomNo: roomNo || null,
+      },
+    };
+
+    if (!groups.has(groupKey)) {
+      groups.set(groupKey, {
+        groupType,
+        groupLabel,
+        sessionId: order.sessionId,
+        branchId: order.branchId,
+        createdAt: order.createdAt,
+        session: {
+          type: sessionType,
+          tableNo: tableNo || null,
+          roomNo: roomNo || null,
+        },
+        orders: [orderWithSession],
+      });
+      continue;
+    }
+
+    const existingGroup = groups.get(groupKey);
+    existingGroup.orders.push(orderWithSession);
+
+    if (new Date(order.createdAt).getTime() > new Date(existingGroup.createdAt).getTime()) {
+      existingGroup.createdAt = order.createdAt;
+    }
+  }
+
+  return Array.from(groups.values())
+    .map((group) => ({
+      ...group,
+      orders: group.orders.sort(
+        (left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime(),
+      ),
+    }))
+    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
 };

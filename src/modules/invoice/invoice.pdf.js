@@ -301,6 +301,7 @@ const drawRestaurantInvoice = (
   organization,
   branch,
   posOrder,
+  posOrders,
   booking,
   financialSettings,
   currencyCode,
@@ -322,14 +323,18 @@ const drawRestaurantInvoice = (
     ROOM_SERVICE: "Room Service",
   };
 
-  const items =
-    posOrder?.items?.map((item) => ({
-      name: item.nameSnapshot || item.name || "Menu Item",
+  const sessionOrders = Array.isArray(posOrders) ? posOrders : [];
+  const isSessionInvoice = Boolean(
+    invoice.sessionId || (Array.isArray(invoice.orderIds) && invoice.orderIds.length > 1),
+  );
+  const items = (isSessionInvoice ? invoice.lineItems : posOrder?.items)?.map((item) => ({
+      name: item.description || item.nameSnapshot || item.name || "Menu Item",
       quantity: Number(item.quantity || 0),
-      price: formatAmount(item.priceSnapshot || item.price || 0),
+      price: formatAmount(item.unitPrice || item.priceSnapshot || item.price || 0),
       total: formatAmount(
-        item.totalItemAmount ||
-          (item.quantity || 0) * (item.priceSnapshot || item.price || 0),
+        item.total ||
+          item.totalItemAmount ||
+          (item.quantity || 0) * (item.unitPrice || item.priceSnapshot || item.price || 0),
       ),
     })) ||
     invoice.lineItems.map((item) => ({
@@ -343,36 +348,57 @@ const drawRestaurantInvoice = (
     ? invoice.paymentHistory[invoice.paymentHistory.length - 1]
     : null;
 
-  const subTotal = formatAmount(posOrder?.subTotal ?? invoice.totalAmount ?? 0);
+  const subTotal = formatAmount(
+    isSessionInvoice ? invoice.totalAmount ?? 0 : posOrder?.subTotal ?? invoice.totalAmount ?? 0,
+  );
   const discount = formatAmount(
-    posOrder?.discountAmount ?? invoice.discountAmount ?? 0,
+    isSessionInvoice
+      ? invoice.discountAmount ?? 0
+      : posOrder?.discountAmount ?? invoice.discountAmount ?? 0,
   );
   const taxableBase = formatAmount(Math.max(subTotal - discount, 0));
   const taxAmount = formatAmount(
-    financialSettings
+    isSessionInvoice
+      ? invoice.taxAmount ?? 0
+      : financialSettings
       ? (taxableBase * Number(financialSettings.taxPercentage || 0)) / 100
       : posOrder?.totalTax ?? invoice.taxAmount ?? 0,
   );
   const serviceCharge = formatAmount(
-    financialSettings
+    isSessionInvoice
+      ? invoice.serviceChargeAmount ?? 0
+      : financialSettings
       ? (taxableBase * Number(financialSettings.serviceChargePercentage || 0)) / 100
       : posOrder?.totalServiceCharge ?? invoice.serviceChargeAmount ?? 0,
   );
   const finalAmount = formatAmount(
-    posOrder?.grandTotal ?? invoice.finalAmount ?? 0,
+    isSessionInvoice ? invoice.finalAmount ?? 0 : posOrder?.grandTotal ?? invoice.finalAmount ?? 0,
   );
   const paidAmount = formatAmount(invoice.paidAmount || 0);
   const paymentMethod =
-    latestPayment?.method || posOrder?.paymentMethod || "N/A";
+    latestPayment?.method ||
+    posOrder?.paymentMethod ||
+    sessionOrders.find((order) => order.paymentMethod)?.paymentMethod ||
+    "N/A";
   const paymentStatus =
     invoice.status === "PAID"
       ? "Paid"
       : invoice.status === "PARTIALLY_PAID"
         ? "Partially Paid"
         : "Pending";
-  const staffName = posOrder?.createdBy?.name || "N/A";
+  const staffNames = [
+    ...new Set(
+      sessionOrders
+        .map((order) => order?.createdBy?.name)
+        .filter(Boolean),
+    ),
+  ];
+  const staffName =
+    staffNames.length > 1
+      ? "Multiple Staff"
+      : staffNames[0] || posOrder?.createdBy?.name || "N/A";
   const orderDateTime = formatDateTime(
-    posOrder?.createdAt || invoice.createdAt,
+    sessionOrders[0]?.createdAt || posOrder?.createdAt || invoice.createdAt,
   );
   const orderType =
     orderTypeLabelMap[invoice.orderType] ||
@@ -386,7 +412,11 @@ const drawRestaurantInvoice = (
     branch.contactNumber || organization.contactPhone || "N/A";
   const restaurantName = `${branch.name} Restaurant`;
   const orderRef =
-    posOrder?.orderCode || posOrder?.orderId || invoice.referenceId || "N/A";
+    invoice.sessionId ||
+    posOrder?.orderCode ||
+    posOrder?.orderId ||
+    invoice.referenceId ||
+    "N/A";
 
   doc.rect(0, 0, 595, 22).fill(primaryColor);
   doc.rect(0, 22, 595, 124).fill("#FFFFFF");
@@ -512,8 +542,8 @@ const drawRestaurantInvoice = (
     currentY,
     162,
     "TABLE / ORDER TYPE",
-    posOrder?.tableNumber
-      ? `Table ${posOrder.tableNumber} • ${orderType}`
+    (invoice.tableNo || posOrder?.tableNumber)
+      ? `Table ${invoice.tableNo || posOrder?.tableNumber} • ${orderType}`
       : orderType,
   );
   drawMetaCard(392, currentY, 163, "WAITER / STAFF", staffName);
@@ -735,6 +765,7 @@ exports.generateInvoicePDF = (invoice, organization, branch, context = {}) => {
       (
         context.booking ||
         context.posOrder ||
+        context.posOrders ||
         context.staff ||
         context.customer ||
         context.financialSettings
@@ -751,6 +782,7 @@ exports.generateInvoicePDF = (invoice, organization, branch, context = {}) => {
         organization,
         branch,
         normalizedContext.posOrder || null,
+        normalizedContext.posOrders || [],
         normalizedContext.booking || null,
         normalizedContext.financialSettings || null,
         currencyCode,

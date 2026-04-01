@@ -39,6 +39,27 @@ const invoiceSchema = new mongoose.Schema(
       index: true,
     },
 
+    sessionId: {
+      type: String,
+      default: null,
+      index: true,
+    },
+
+    orderIds: {
+      type: [String],
+      default: [],
+    },
+
+    tableNo: {
+      type: String,
+      default: null,
+    },
+
+    roomNo: {
+      type: String,
+      default: null,
+    },
+
     orderType: {
       type: String,
       enum: ["DINE_IN", "ROOM_SERVICE", "TAKEAWAY", null],
@@ -127,8 +148,8 @@ const invoiceSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["UNPAID", "PARTIALLY_PAID", "PAID"],
-      default: "UNPAID",
+      enum: ["PENDING", "UNPAID", "PARTIALLY_PAID", "PAID"],
+      default: "PENDING",
       index: true,
     },
 

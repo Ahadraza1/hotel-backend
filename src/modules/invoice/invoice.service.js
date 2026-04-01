@@ -5,6 +5,8 @@ const Organization = require("../organization/organization.model");
 const Branch = require("../branch/branch.model");
 const Booking = require("../booking/booking.model");
 const POSOrder = require("../pos/posOrder.model");
+const POSSession = require("../pos/posSession.model");
+const POSTable = require("../pos/posTable.model");
 const branchSettingsService = require("../branchSettings/branchSettings.service");
 const { ensureActiveBranch } = require("../../utils/workspaceScope");
 
@@ -22,10 +24,10 @@ const deriveGuestName = ({ invoice, booking, posOrder }) => {
   }
 
   if (invoice.orderType === "ROOM_SERVICE" || posOrder?.orderType === "ROOM_SERVICE") {
-    return booking?.guestName || "Guest";
+    return invoice.guestName || booking?.guestName || invoice.roomNo || "Guest";
   }
 
-  return posOrder?.tableNumber || "Walk-in Guest";
+  return invoice.guestName || invoice.tableNo || posOrder?.tableNumber || "Walk-in Guest";
 };
 
 const deriveOrderType = ({ invoice, posOrder }) => {
@@ -102,8 +104,9 @@ exports.getInvoices = async (user, filters = {}) => {
   const posReferenceIds = invoices
     .filter((invoice) => invoice.referenceType === "POS" && invoice.referenceId)
     .map((invoice) => invoice.referenceId);
+  const sessionIds = invoices.map((invoice) => invoice.sessionId).filter(Boolean);
 
-  const [bookings, posOrders] = await Promise.all([
+  const [bookings, posOrders, posSessions] = await Promise.all([
     bookingObjectIds.length
       ? Booking.find({ _id: { $in: bookingObjectIds } })
           .select("_id guestName guestPhone")
@@ -111,13 +114,19 @@ exports.getInvoices = async (user, filters = {}) => {
       : [],
     posReferenceIds.length
       ? POSOrder.find({ orderId: { $in: posReferenceIds } })
-          .select("orderId orderType tableNumber bookingId")
+          .select("orderId orderType tableNumber roomNumber bookingId")
+          .lean()
+      : [],
+    sessionIds.length
+      ? POSSession.find({ sessionId: { $in: sessionIds } })
+          .select("sessionId guestName tableNo roomNo type")
           .lean()
       : [],
   ]);
 
   const bookingMap = new Map(bookings.map((booking) => [String(booking._id), booking]));
   const posOrderMap = new Map(posOrders.map((order) => [String(order.orderId), order]));
+  const sessionMap = new Map(posSessions.map((session) => [String(session.sessionId), session]));
 
   return invoices.map((invoice) => {
     const booking = invoice.bookingId ? bookingMap.get(String(invoice.bookingId)) : null;
@@ -125,11 +134,19 @@ exports.getInvoices = async (user, filters = {}) => {
       invoice.referenceType === "POS" && invoice.referenceId
         ? posOrderMap.get(String(invoice.referenceId))
         : null;
+    const posSession = invoice.sessionId
+      ? sessionMap.get(String(invoice.sessionId))
+      : null;
 
     return {
       ...invoice,
-      guestName: deriveGuestName({ invoice, booking, posOrder }),
-      orderType: deriveOrderType({ invoice, posOrder }),
+      guestName:
+        invoice.guestName ||
+        posSession?.guestName ||
+        deriveGuestName({ invoice, booking, posOrder }),
+      orderType: invoice.orderType || posSession?.type || deriveOrderType({ invoice, posOrder }),
+      tableNo: invoice.tableNo || posSession?.tableNo || posOrder?.tableNumber || null,
+      roomNo: invoice.roomNo || posSession?.roomNo || posOrder?.roomNumber || null,
     };
   });
 };
@@ -213,13 +230,33 @@ exports.recordPayment = async (invoiceId, data, user) => {
           await branchSettingsService.getFinancialSettingsByBranchId(
             invoice.branchId,
           );
-        const posOrder =
-          invoice.referenceType === "POS"
-            ? await POSOrder.findOne({ orderId: invoice.referenceId }).populate(
-                "createdBy",
-                "name email phone",
-              )
-            : null;
+        let posOrder = null;
+        let posOrders = [];
+
+        if (invoice.referenceType === "POS") {
+          if (invoice.sessionId) {
+            const orderQuery = {
+              sessionId: invoice.sessionId,
+              branchId: user.branchId,
+              isActive: true,
+            };
+
+            if (Array.isArray(invoice.orderIds) && invoice.orderIds.length) {
+              orderQuery.orderId = { $in: invoice.orderIds };
+            }
+
+            posOrders = await POSOrder.find(orderQuery)
+              .sort({ createdAt: 1 })
+              .populate("createdBy", "name email phone");
+            posOrder = posOrders[0] || null;
+          } else {
+            posOrder = await POSOrder.findOne({ orderId: invoice.referenceId }).populate(
+              "createdBy",
+              "name email phone",
+            );
+            posOrders = posOrder ? [posOrder] : [];
+          }
+        }
 
         if (!organization || !branch) {
           console.error("Organization or Branch not found for invoice PDF");
@@ -232,6 +269,7 @@ exports.recordPayment = async (invoiceId, data, user) => {
               booking,
               financialSettings,
               posOrder,
+              posOrders,
             },
           );
 
@@ -251,6 +289,45 @@ exports.recordPayment = async (invoiceId, data, user) => {
         { paymentStatus: "PAID" },
         { session },
       );
+
+      if (invoice.sessionId) {
+        const posSession = await POSSession.findOne({
+          sessionId: invoice.sessionId,
+          branchId: user.branchId,
+          isActive: true,
+        }).session(session);
+
+        if (posSession) {
+          posSession.status = "CLOSED";
+          posSession.invoiceId = invoice.invoiceId;
+          await posSession.save({ session });
+
+          if (posSession.tableId) {
+            await POSTable.findByIdAndUpdate(
+              posSession.tableId,
+              { status: "AVAILABLE" },
+              { session },
+            );
+          }
+
+          await POSOrder.updateMany(
+            {
+              sessionId: posSession.sessionId,
+              branchId: user.branchId,
+              isActive: true,
+            },
+            {
+              $set: {
+                paymentStatus: "PAID",
+                paymentMethod: method,
+                invoiceLinked: true,
+                invoiceId: invoice.invoiceId,
+              },
+            },
+            { session },
+          );
+        }
+      }
     }
 
     await invoice.save({ session });

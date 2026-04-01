@@ -7,6 +7,144 @@ const POSTable = require("./posTable.model");
 const posSeeder = require("../../seeder/pos.seeder");
 const { getIO } = require("../../config/socket");
 
+exports.openSession = async (req, res) => {
+  try {
+    const session = await posService.openSession(req.body, req.user);
+
+    res.status(200).json({
+      success: true,
+      message: "Session opened successfully",
+      data: session,
+    });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.getSessions = async (req, res) => {
+  try {
+    const sessions = await posService.getSessions(req.user, req.query);
+
+    res.status(200).json({
+      success: true,
+      data: sessions,
+    });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.getSessionById = async (req, res) => {
+  try {
+    const session = await posService.getSessionById(req.params.sessionId, req.user);
+
+    res.status(200).json({
+      success: true,
+      data: session,
+    });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.updateSessionGuestName = async (req, res) => {
+  try {
+    const session = await posService.updateSessionGuestName(
+      req.params.sessionId,
+      req.body.guestName,
+      req.user,
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Guest name updated",
+      data: session,
+    });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.generateBill = async (req, res) => {
+  try {
+    const invoice = await posService.generateBill(req.params.sessionId, req.user);
+
+    res.status(200).json({
+      success: true,
+      message: "Invoice generated successfully",
+      data: invoice,
+    });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.transferSession = async (req, res) => {
+  try {
+    const session = await posService.transferSession(
+      req.params.sessionId,
+      req.body,
+      req.user,
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Session updated successfully",
+      data: session,
+    });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+exports.paySessionInvoice = async (req, res) => {
+  try {
+    const { paymentMethod } = req.body;
+
+    if (!paymentMethod) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment method required",
+      });
+    }
+
+    const invoice = await posService.paySessionInvoice(
+      req.params.sessionId,
+      paymentMethod,
+      req.user,
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Session paid successfully",
+      data: invoice,
+    });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 /*
   CREATE ORDER
 */
