@@ -3,6 +3,30 @@ const Permission = require("./permission.model");
 const Role = require("./role.model");
 
 const canManagePermissions = (user) => user?.role === "SUPER_ADMIN";
+const normalizePermissions = (permissions = []) =>
+  permissions
+    .filter((permission) => typeof permission === "string")
+    .map((permission) => permission.trim().toUpperCase())
+    .filter(Boolean);
+
+const hasRbacPermission = (user, permission) => {
+  if (user?.isPlatformAdmin || user?.role === "SUPER_ADMIN") {
+    return true;
+  }
+
+  return normalizePermissions(user?.permissions).includes(
+    String(permission || "").trim().toUpperCase(),
+  );
+};
+const ROLE_PERMISSION_EDITOR_PERMISSIONS = [
+  "ACCESS_ROLE_PERMISSIONS_PAGE",
+  "ACCESS_ROLES",
+  "ACCESS_PERMISSIONS",
+  "ADD_ROLE",
+  "ADD_PERMISSION",
+  "TOGGLE_PERMISSION",
+];
+const ROLE_PERMISSION_EDITOR_MODULE = "ROLE_PERMISSIONS";
 
 const normalizeToken = (value) => String(value || "").trim().toUpperCase();
 
@@ -20,18 +44,48 @@ const ensureFinanceViewInvoicePermission = async () => {
   }
 };
 
+const ensureRolePermissionEditorPermissions = async () => {
+  await Permission.updateMany(
+    { key: { $in: ROLE_PERMISSION_EDITOR_PERMISSIONS } },
+    { $set: { module: ROLE_PERMISSION_EDITOR_MODULE } },
+  );
+
+  const existingPermissions = await Permission.find({
+    key: { $in: ROLE_PERMISSION_EDITOR_PERMISSIONS },
+  }).select("key");
+
+  const existingKeys = new Set(existingPermissions.map((permission) => permission.key));
+
+  const missingPermissions = ROLE_PERMISSION_EDITOR_PERMISSIONS.filter(
+    (key) => !existingKeys.has(key),
+  );
+
+  if (missingPermissions.length === 0) {
+    return;
+  }
+
+  await Permission.insertMany(
+    missingPermissions.map((key) => ({
+      name: key,
+      key,
+      module: ROLE_PERMISSION_EDITOR_MODULE,
+    })),
+  );
+};
+
 /*
   Get Permissions
 */
 exports.getPermissions = async (req, res) => {
   try {
-    if (!canManagePermissions(req.user)) {
+    if (!hasRbacPermission(req.user, "ACCESS_PERMISSIONS")) {
       return res.status(403).json({
         message: "Access denied",
       });
     }
 
     await ensureFinanceViewInvoicePermission();
+    await ensureRolePermissionEditorPermissions();
 
     const permissions = await Permission.find().sort({ module: 1, key: 1 });
 
@@ -71,7 +125,7 @@ exports.getPermissions = async (req, res) => {
 
 exports.createPermission = async (req, res) => {
   try {
-    if (!canManagePermissions(req.user)) {
+    if (!hasRbacPermission(req.user, "ADD_PERMISSION")) {
       return res.status(403).json({
         success: false,
         message: "Access denied",

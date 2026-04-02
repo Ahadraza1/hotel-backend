@@ -284,14 +284,6 @@ exports.changeUserRole = async (req, res) => {
     const roleId = req.body?.roleId;
     const roleKey = String(req.body?.role || "").trim().toUpperCase();
 
-    // 1. Restriction: Only Super Admin can edit roles
-    if (req.user.role !== "SUPER_ADMIN") {
-      return res.status(403).json({
-        success: false,
-        message: "Only Super Admin can change user roles",
-      });
-    }
-
     if (!roleId && !roleKey) {
       return res.status(400).json({
         success: false,
@@ -319,6 +311,13 @@ exports.changeUserRole = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "User not found",
+      });
+    }
+
+    if (!ensureUserManagementAccess(req.user, targetUser)) {
+      return res.status(403).json({
+        success: false,
+        message: "Unauthorized",
       });
     }
 

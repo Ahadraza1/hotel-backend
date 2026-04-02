@@ -29,6 +29,12 @@ const roleSchema = new mongoose.Schema(
       default: "CUSTOM",
     },
 
+    category: {
+      type: String,
+      enum: ["MAIN", "ORGANIZATION", "BRANCH"],
+      default: "BRANCH",
+    },
+
     organizationId: {
       type: String,
       default: null,

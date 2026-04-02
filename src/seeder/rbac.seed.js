@@ -38,6 +38,13 @@ const seedRBAC = async () => {
       { name: "DELETE_USER", module: "USER" },
       { name: "VIEW_USER", module: "USER" },
 
+      { name: "ACCESS_ROLE_PERMISSIONS_PAGE", module: "ROLE_PERMISSIONS" },
+      { name: "ACCESS_ROLES", module: "ROLE_PERMISSIONS" },
+      { name: "ACCESS_PERMISSIONS", module: "ROLE_PERMISSIONS" },
+      { name: "ADD_ROLE", module: "ROLE_PERMISSIONS" },
+      { name: "ADD_PERMISSION", module: "ROLE_PERMISSIONS" },
+      { name: "TOGGLE_PERMISSION", module: "ROLE_PERMISSIONS" },
+
       { name: "ACCESS_SETTINGS", module: "SYSTEM" },
       { name: "ACCESS_ANALYTICS", module: "ANALYTICS" },
       { name: "ACCESS_AUDIT", module: "AUDIT" },
@@ -124,12 +131,14 @@ const seedRBAC = async () => {
       // ===== SUPER ADMIN =====
       {
         name: "SUPER_ADMIN",
+        category: "MAIN",
         permissions: permissions.map((p) => p._id),
       },
 
       // ===== CORPORATE ADMIN =====
       {
         name: "CORPORATE_ADMIN",
+        category: "ORGANIZATION",
         permissions: getPermissionIds([
           "ACCESS_ORGANIZATION",
           "VIEW_ORGANIZATION",
@@ -152,6 +161,7 @@ const seedRBAC = async () => {
       // ===== BRANCH MANAGER =====
       {
         name: "BRANCH_MANAGER",
+        category: "BRANCH",
         permissions: getPermissionIds([
           "ACCESS_ROOMS",
           "VIEW_ROOM",
@@ -185,6 +195,7 @@ const seedRBAC = async () => {
       // ===== RECEPTIONIST =====
       {
         name: "RECEPTIONIST",
+        category: "BRANCH",
         permissions: getPermissionIds([
           "ACCESS_BOOKINGS",
           "VIEW_BOOKING",
@@ -199,6 +210,7 @@ const seedRBAC = async () => {
       // ===== ACCOUNTANT =====
       {
         name: "ACCOUNTANT",
+        category: "BRANCH",
         permissions: getPermissionIds([
           "ACCESS_FINANCE",
           "VIEW_INVOICE",
@@ -211,6 +223,7 @@ const seedRBAC = async () => {
       // ===== HOUSEKEEPING =====
       {
         name: "HOUSEKEEPING",
+        category: "BRANCH",
         permissions: getPermissionIds([
           "ACCESS_HOUSEKEEPING",
           "VIEW_TASK",
@@ -221,12 +234,14 @@ const seedRBAC = async () => {
       // ===== HR MANAGER =====
       {
         name: "HR_MANAGER",
+        category: "BRANCH",
         permissions: getPermissionIds(["ACCESS_HR", "VIEW_EMPLOYEE"]),
       },
 
       // ===== RESTAURANT MANAGER =====
       {
         name: "RESTAURANT_MANAGER",
+        category: "BRANCH",
         permissions: getPermissionIds([
           "ACCESS_POS",
           "VIEW_POS_MENU",
@@ -239,6 +254,7 @@ const seedRBAC = async () => {
       // ===== WAITER =====
       {
         name: "Waiter",
+        category: "BRANCH",
         permissions: [],
       },
     ]);

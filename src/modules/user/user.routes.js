@@ -3,6 +3,7 @@ const router = express.Router();
 const authMiddleware = require("../../middleware/auth.middleware");
 const userController = require("./user.controller");
 const requireAuth = require("../../middleware/requireAuth.middleware");
+const requirePermission = require("../../middleware/requirePermission.middleware");
 const upload = require("../../middleware/upload.middleware");
 
 /*
@@ -44,6 +45,11 @@ router.patch("/:userId/status", requireAuth, userController.updateUserStatus);
 
 router.delete("/:userId", requireAuth, userController.deleteUser);
 
-router.patch("/:userId/role", requireAuth, userController.changeUserRole);
+router.patch(
+  "/:userId/role",
+  requireAuth,
+  requirePermission("UPDATE_USER"),
+  userController.changeUserRole,
+);
 
 module.exports = router;

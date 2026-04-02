@@ -4,12 +4,56 @@ const User = require("../user/user.model");
 const mongoose = require("mongoose");
 
 const canManageRoles = (user) => user?.role === "SUPER_ADMIN";
+const normalizePermissions = (permissions = []) =>
+  permissions
+    .filter((permission) => typeof permission === "string")
+    .map((permission) => permission.trim().toUpperCase())
+    .filter(Boolean);
+
+const hasRbacPermission = (user, permission) => {
+  if (user?.isPlatformAdmin || user?.role === "SUPER_ADMIN") {
+    return true;
+  }
+
+  return normalizePermissions(user?.permissions).includes(
+    String(permission || "").trim().toUpperCase(),
+  );
+};
 
 const ACCOUNTANT_FINANCE_PERMISSIONS = [
   "ACCESS_FINANCE",
   "VIEW_INVOICE",
   "VIEW_EXPENSE",
 ];
+const ROLE_CATEGORY = {
+  MAIN: "MAIN",
+  ORGANIZATION: "ORGANIZATION",
+  BRANCH: "BRANCH",
+};
+const UI_CREATABLE_ROLE_CATEGORIES = [
+  ROLE_CATEGORY.ORGANIZATION,
+  ROLE_CATEGORY.BRANCH,
+];
+
+const normalizeRoleName = (value) =>
+  String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "_");
+
+const getRoleCategory = (role) => {
+  const normalizedName = normalizeRoleName(role?.normalizedName || role?.name);
+
+  if (normalizedName === "SUPER_ADMIN") {
+    return ROLE_CATEGORY.MAIN;
+  }
+
+  if (normalizedName === "CORPORATE_ADMIN") {
+    return ROLE_CATEGORY.ORGANIZATION;
+  }
+
+  return role?.category || ROLE_CATEGORY.BRANCH;
+};
 
 const ensureSystemRoles = async () => {
   await Role.findOneAndUpdate(
@@ -19,6 +63,7 @@ const ensureSystemRoles = async () => {
         name: "Waiter",
         normalizedName: "WAITER",
         description: "",
+        category: ROLE_CATEGORY.BRANCH,
         permissions: [],
       },
     },
@@ -26,6 +71,30 @@ const ensureSystemRoles = async () => {
       new: true,
       upsert: true,
     },
+  );
+};
+
+const ensureBaseRoleCategories = async () => {
+  await Role.updateMany(
+    { normalizedName: "SUPER_ADMIN" },
+    { $set: { category: ROLE_CATEGORY.MAIN } },
+  );
+
+  await Role.updateMany(
+    { normalizedName: "CORPORATE_ADMIN" },
+    { $set: { category: ROLE_CATEGORY.ORGANIZATION } },
+  );
+
+  await Role.updateMany(
+    {
+      normalizedName: { $nin: ["SUPER_ADMIN", "CORPORATE_ADMIN"] },
+      $or: [
+        { category: { $exists: false } },
+        { category: null },
+        { category: "" },
+      ],
+    },
+    { $set: { category: ROLE_CATEGORY.BRANCH } },
   );
 };
 
@@ -88,9 +157,17 @@ const canViewRoles = (user) => {
     return true;
   }
 
-  const permissions = Array.isArray(user?.permissions) ? user.permissions : [];
+  const permissions = normalizePermissions(user?.permissions);
 
-  return permissions.includes("VIEW_USER") || permissions.includes("ACCESS_USERS");
+  return (
+    permissions.includes("VIEW_USER") ||
+    permissions.includes("ACCESS_USERS") ||
+    permissions.includes("ACCESS_ROLE_PERMISSIONS_PAGE") ||
+    permissions.includes("ACCESS_ROLES") ||
+    permissions.includes("ACCESS_PERMISSIONS") ||
+    permissions.includes("ADD_ROLE") ||
+    permissions.includes("TOGGLE_PERMISSION")
+  );
 };
 
 const getRoleAccessFilter = (user) => {
@@ -98,7 +175,21 @@ const getRoleAccessFilter = (user) => {
     return {};
   }
 
-  return null;
+  const organizationScope = [
+    { organizationId: null },
+    { organizationId: { $exists: false } },
+  ];
+
+  if (user?.organizationId) {
+    organizationScope.push({ organizationId: String(user.organizationId) });
+  }
+
+  return {
+    category: {
+      $in: [ROLE_CATEGORY.ORGANIZATION, ROLE_CATEGORY.BRANCH],
+    },
+    $or: organizationScope,
+  };
 };
 
 const getAccessibleRoleQuery = (user, roleId) => {
@@ -110,7 +201,7 @@ const getAccessibleRoleQuery = (user, roleId) => {
 
   return accessFilter.$or
     ? { $and: [{ _id: roleId }, accessFilter] }
-    : { _id: roleId };
+    : { _id: roleId, ...accessFilter };
 };
 
 /*
@@ -125,6 +216,7 @@ exports.getRoles = async (req, res) => {
     }
 
     await ensureSystemRoles();
+    await ensureBaseRoleCategories();
     await ensureAccountantRolePermissions();
 
     const filter = getRoleAccessFilter(req.user) || {};
@@ -145,7 +237,7 @@ exports.getRoles = async (req, res) => {
 
 exports.createRole = async (req, res) => {
   try {
-    if (!canManageRoles(req.user)) {
+    if (!hasRbacPermission(req.user, "ADD_ROLE")) {
       return res.status(403).json({
         success: false,
         message: "Access denied",
@@ -154,6 +246,9 @@ exports.createRole = async (req, res) => {
 
     const name = String(req.body?.name || "").trim();
     const description = String(req.body?.description || "").trim();
+    const category = String(req.body?.category || ROLE_CATEGORY.BRANCH)
+      .trim()
+      .toUpperCase();
 
     if (!name) {
       return res.status(400).json({
@@ -162,8 +257,33 @@ exports.createRole = async (req, res) => {
       });
     }
 
-    const normalizedName = name.toUpperCase().replace(/\s+/g, "_");
-    const organizationId = null;
+    if (!UI_CREATABLE_ROLE_CATEGORIES.includes(category)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid role category",
+      });
+    }
+
+    const normalizedName = normalizeRoleName(name);
+
+    if (normalizedName === "SUPER_ADMIN") {
+      return res.status(400).json({
+        success: false,
+        message: "Super Admin role cannot be created from this form",
+      });
+    }
+
+    const organizationId =
+      req.user?.role === "CORPORATE_ADMIN"
+        ? String(req.user.organizationId || "").trim() || null
+        : null;
+
+    if (req.user?.role === "CORPORATE_ADMIN" && !organizationId) {
+      return res.status(403).json({
+        success: false,
+        message: "Organization access is required to create roles",
+      });
+    }
 
     const duplicate = await Role.findOne({
       normalizedName,
@@ -182,6 +302,7 @@ exports.createRole = async (req, res) => {
       normalizedName,
       description,
       type: "CUSTOM",
+      category,
       organizationId,
       permissions: [],
     });
@@ -220,6 +341,7 @@ exports.createRole = async (req, res) => {
 exports.updateRolePermissions = async (req, res) => {
   try {
     await ensureSystemRoles();
+    await ensureBaseRoleCategories();
 
     const { roleId } = req.params;
     const { permissions } = req.body;
@@ -238,14 +360,14 @@ exports.updateRolePermissions = async (req, res) => {
       });
     }
 
-    if (!canManageRoles(req.user)) {
+    if (!hasRbacPermission(req.user, "TOGGLE_PERMISSION")) {
       return res.status(403).json({
         success: false,
         message: "Access denied",
       });
     }
 
-    const roleQuery = getAccessibleRoleQuery(req.user, roleId);
+    const roleQuery = getAccessibleRoleQuery(req.user, roleId) || { _id: roleId };
     const role = roleQuery ? await Role.findOne(roleQuery) : null;
 
     if (!role) {
@@ -370,6 +492,9 @@ exports.deleteRole = async (req, res) => {
   try {
     const { roleId } = req.params;
 
+    await ensureSystemRoles();
+    await ensureBaseRoleCategories();
+
     if (!mongoose.Types.ObjectId.isValid(roleId)) {
       return res.status(400).json({
         success: false,
@@ -394,7 +519,11 @@ exports.deleteRole = async (req, res) => {
       });
     }
 
-    if (role.normalizedName === "SUPER_ADMIN" || role.type === "SYSTEM") {
+    if (
+      getRoleCategory(role) === ROLE_CATEGORY.MAIN ||
+      role.normalizedName === "SUPER_ADMIN" ||
+      role.type === "SYSTEM"
+    ) {
       return res.status(400).json({
         success: false,
         message: "This role cannot be deleted",
