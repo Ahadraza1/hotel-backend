@@ -41,6 +41,52 @@ const normalizeRoleName = (value) =>
     .toUpperCase()
     .replace(/\s+/g, "_");
 
+const ensureNormalizedRoleNames = async () => {
+  const legacyRoles = await Role.find({
+    $or: [
+      { normalizedName: { $exists: false } },
+      { normalizedName: null },
+      { normalizedName: "" },
+    ],
+  })
+    .select("_id name")
+    .lean();
+
+  if (legacyRoles.length === 0) {
+    return;
+  }
+
+  await Role.bulkWrite(
+    legacyRoles
+      .map((role) => {
+        const normalizedName = normalizeRoleName(role.name);
+
+        if (!normalizedName) {
+          return null;
+        }
+
+        return {
+          updateOne: {
+            filter: {
+              _id: role._id,
+              $or: [
+                { normalizedName: { $exists: false } },
+                { normalizedName: null },
+                { normalizedName: "" },
+              ],
+            },
+            update: {
+              $set: {
+                normalizedName,
+              },
+            },
+          },
+        };
+      })
+      .filter(Boolean),
+  );
+};
+
 const getRoleCategory = (role) => {
   const normalizedName = normalizeRoleName(role?.normalizedName || role?.name);
 
@@ -56,6 +102,8 @@ const getRoleCategory = (role) => {
 };
 
 const ensureSystemRoles = async () => {
+  await ensureNormalizedRoleNames();
+
   await Role.findOneAndUpdate(
     { normalizedName: "WAITER", organizationId: null },
     {
@@ -68,7 +116,7 @@ const ensureSystemRoles = async () => {
       },
     },
     {
-      new: true,
+      returnDocument: "after",
       upsert: true,
     },
   );
@@ -99,23 +147,76 @@ const ensureBaseRoleCategories = async () => {
 };
 
 const ensurePermissionDocs = async (keys) => {
-  const normalizedKeys = [...new Set(keys.map((key) => String(key).trim().toUpperCase()))];
-  const existingPermissions = await Permission.find({
-    key: { $in: normalizedKeys },
-  }).select("_id key");
+  const normalizedKeys = [
+    ...new Set(keys.map((key) => String(key).trim().toUpperCase()).filter(Boolean)),
+  ];
 
-  const existingByKey = new Map(
-    existingPermissions.map((permission) => [permission.key, permission]),
-  );
+  const existingPermissions = await Permission.find({
+    $or: [{ key: { $in: normalizedKeys } }, { name: { $in: normalizedKeys } }],
+  }).select("_id key name module");
+
+  const existingByKey = new Map();
+  const permissionUpdates = [];
+
+  existingPermissions.forEach((permission) => {
+    const normalizedKey = String(permission.key || permission.name || "")
+      .trim()
+      .toUpperCase();
+
+    if (!normalizedKey) {
+      return;
+    }
+
+    existingByKey.set(normalizedKey, permission);
+
+    if (
+      String(permission.key || "").trim().toUpperCase() !== normalizedKey ||
+      String(permission.module || "").trim().toUpperCase() !== "FINANCE"
+    ) {
+      permissionUpdates.push({
+        updateOne: {
+          filter: { _id: permission._id },
+          update: {
+            $set: {
+              key: normalizedKey,
+              module: String(permission.module || "FINANCE")
+                .trim()
+                .toUpperCase(),
+            },
+          },
+        },
+      });
+    }
+  });
+
+  if (permissionUpdates.length > 0) {
+    await Permission.bulkWrite(permissionUpdates);
+  }
 
   for (const key of normalizedKeys) {
     if (!existingByKey.has(key)) {
-      const created = await Permission.create({
-        name: key,
-        key,
-        module: "FINANCE",
-      });
-      existingByKey.set(key, created);
+      try {
+        const created = await Permission.create({
+          name: key,
+          key,
+          module: "FINANCE",
+        });
+        existingByKey.set(key, created);
+      } catch (error) {
+        if (error?.code !== 11000) {
+          throw error;
+        }
+
+        const existingPermission = await Permission.findOne({
+          $or: [{ key }, { name: key }],
+        }).select("_id key name module");
+
+        if (!existingPermission) {
+          throw error;
+        }
+
+        existingByKey.set(key, existingPermission);
+      }
     }
   }
 
@@ -229,6 +330,14 @@ exports.getRoles = async (req, res) => {
       data: roles,
     });
   } catch (error) {
+    console.error("Failed to fetch roles", {
+      userId: req.user?._id || req.user?.id || null,
+      role: req.user?.role || null,
+      organizationId: req.user?.organizationId || null,
+      error: error?.message,
+      stack: error?.stack,
+    });
+
     res.status(500).json({
       message: "Failed to fetch roles",
     });
