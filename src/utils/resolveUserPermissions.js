@@ -45,23 +45,64 @@ const normalizePermissions = (permissions = []) =>
     return [...expanded];
   };
 
+const normalizeScopeId = (value) => {
+  const normalized = String(value || "").trim();
+  return normalized || null;
+};
+
 const getRoleCandidates = (user) => {
   const normalizedRole = String(user?.role || "")
     .trim()
     .toUpperCase()
     .replace(/\s+/g, "_");
   const rawRole = String(user?.role || "").trim();
+  const organizationId = normalizeScopeId(user?.organizationId);
+  const branchId = normalizeScopeId(user?.branchId);
 
   return [
     ...(user?.roleRef ? [{ _id: user.roleRef }] : []),
-    ...(user?.organizationId && normalizedRole
-      ? [{ normalizedName: normalizedRole, organizationId: user.organizationId }]
+    ...(organizationId && branchId && normalizedRole
+      ? [{ normalizedName: normalizedRole, organizationId, branchId }]
       : []),
-    ...(user?.organizationId && rawRole
-      ? [{ name: rawRole, organizationId: user.organizationId }]
+    ...(organizationId && branchId && rawRole
+      ? [{ name: rawRole, organizationId, branchId }]
       : []),
-    ...(normalizedRole ? [{ normalizedName: normalizedRole, organizationId: null }] : []),
-    ...(rawRole ? [{ name: rawRole, organizationId: null }] : []),
+    ...(organizationId && normalizedRole
+      ? [
+          {
+            normalizedName: normalizedRole,
+            organizationId,
+            $or: [{ branchId: null }, { branchId: { $exists: false } }, { branchId: "" }],
+          },
+        ]
+      : []),
+    ...(organizationId && rawRole
+      ? [
+          {
+            name: rawRole,
+            organizationId,
+            $or: [{ branchId: null }, { branchId: { $exists: false } }, { branchId: "" }],
+          },
+        ]
+      : []),
+    ...(normalizedRole
+      ? [
+          {
+            normalizedName: normalizedRole,
+            organizationId: null,
+            $or: [{ branchId: null }, { branchId: { $exists: false } }, { branchId: "" }],
+          },
+        ]
+      : []),
+    ...(rawRole
+      ? [
+          {
+            name: rawRole,
+            organizationId: null,
+            $or: [{ branchId: null }, { branchId: { $exists: false } }, { branchId: "" }],
+          },
+        ]
+      : []),
     ...(normalizedRole ? [{ normalizedName: normalizedRole }] : []),
     ...(rawRole ? [{ name: rawRole }] : []),
   ];

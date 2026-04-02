@@ -20,6 +20,45 @@ const normalizeInvitedRole = (role) => {
   return legacyRoleMap[role] || role;
 };
 
+const normalizeScopeId = (value) => {
+  const normalized = String(value || "").trim();
+  return normalized || null;
+};
+
+const findScopedRole = async (normalizedRole, { organizationId = null, branchId = null } = {}) => {
+  const normalizedOrganizationId = normalizeScopeId(organizationId);
+  const normalizedBranchId = normalizeScopeId(branchId);
+  const queries = [
+    ...(normalizedOrganizationId && normalizedBranchId
+      ? [{ normalizedName: normalizedRole, organizationId: normalizedOrganizationId, branchId: normalizedBranchId }]
+      : []),
+    ...(normalizedOrganizationId
+      ? [
+          {
+            normalizedName: normalizedRole,
+            organizationId: normalizedOrganizationId,
+            $or: [{ branchId: null }, { branchId: { $exists: false } }, { branchId: "" }],
+          },
+        ]
+      : []),
+    {
+      normalizedName: normalizedRole,
+      organizationId: null,
+      $or: [{ branchId: null }, { branchId: { $exists: false } }, { branchId: "" }],
+    },
+    { normalizedName: normalizedRole },
+  ];
+
+  for (const query of queries) {
+    const roleDoc = await Role.findOne(query).populate("permissions", "name key").lean();
+    if (roleDoc) {
+      return roleDoc;
+    }
+  }
+
+  return null;
+};
+
 const getDepartmentFromRole = (role) => {
   const normalizedRole = normalizeInvitedRole(role);
 
@@ -424,11 +463,10 @@ exports.acceptInvitation = async (req, res) => {
 
     // ✅ Create User
     const normalizedRole = normalizeInvitedRole(invitation.role);
-    const roleDoc = await Role.findOne({
-      normalizedName: normalizedRole,
-    })
-      .populate("permissions", "name key")
-      .lean();
+    const roleDoc = await findScopedRole(normalizedRole, {
+      organizationId: invitation.organizationId,
+      branchId: invitation.branchId,
+    });
 
     const newUser = await User.create({
       name: invitation.name,

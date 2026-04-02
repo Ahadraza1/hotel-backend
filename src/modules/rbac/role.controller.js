@@ -1,6 +1,7 @@
 const Permission = require("./permission.model");
 const Role = require("./role.model");
 const User = require("../user/user.model");
+const Organization = require("../organization/organization.model");
 const mongoose = require("mongoose");
 
 const canManageRoles = (user) => user?.role === "SUPER_ADMIN";
@@ -40,6 +41,188 @@ const normalizeRoleName = (value) =>
     .trim()
     .toUpperCase()
     .replace(/\s+/g, "_");
+
+const normalizeScopeId = (value) => {
+  const normalized = String(value || "").trim();
+  return normalized || null;
+};
+
+const resolveOrganizationScopeId = async (value) => {
+  const normalized = normalizeScopeId(value);
+
+  if (!normalized) {
+    return null;
+  }
+
+  const directMatch = await Organization.findOne({
+    organizationId: normalized,
+  })
+    .select("organizationId")
+    .lean();
+
+  if (directMatch?.organizationId) {
+    return directMatch.organizationId;
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(normalized)) {
+    return normalized;
+  }
+
+  const objectIdMatch = await Organization.findById(normalized)
+    .select("organizationId")
+    .lean();
+
+  return objectIdMatch?.organizationId || normalized;
+};
+
+const getRoleScopeFromRequest = async (req) => ({
+  organizationId: await resolveOrganizationScopeId(
+    req.query?.organizationId ?? req.body?.organizationId,
+  ),
+  branchId: normalizeScopeId(req.query?.branchId ?? req.body?.branchId),
+});
+
+const mergeAndClauses = (...clauses) => {
+  const normalizedClauses = clauses.filter(Boolean).flatMap((clause) => {
+    if (!clause || Object.keys(clause).length === 0) {
+      return [];
+    }
+
+    return clause.$and ? clause.$and : [clause];
+  });
+
+  if (normalizedClauses.length === 0) {
+    return {};
+  }
+
+  if (normalizedClauses.length === 1) {
+    return normalizedClauses[0];
+  }
+
+  return { $and: normalizedClauses };
+};
+
+const getBranchNullFilter = () => ({
+  $or: [{ branchId: null }, { branchId: { $exists: false } }, { branchId: "" }],
+});
+
+const getRoleScopeFilter = ({ organizationId = null, branchId = null } = {}) => {
+  const normalizedOrganizationId = normalizeScopeId(organizationId);
+  const normalizedBranchId = normalizeScopeId(branchId);
+
+  if (normalizedBranchId) {
+    return mergeAndClauses(
+      {
+        organizationId: normalizedOrganizationId,
+        branchId: normalizedBranchId,
+      },
+      {
+        $or: [
+          { category: ROLE_CATEGORY.BRANCH },
+          { category: { $exists: false } },
+          { category: null },
+          { category: "" },
+        ],
+      },
+    );
+  }
+
+  if (normalizedOrganizationId) {
+    return mergeAndClauses(
+      {
+        organizationId: normalizedOrganizationId,
+      },
+      getBranchNullFilter(),
+      {
+        $or: [
+          { category: ROLE_CATEGORY.ORGANIZATION },
+          { normalizedName: "CORPORATE_ADMIN" },
+          { name: "CORPORATE_ADMIN" },
+          { name: "Corporate Admin" },
+          { category: { $exists: false } },
+          { category: null },
+          { category: "" },
+        ],
+      },
+    );
+  }
+
+  return {};
+};
+
+const getScopedAccessContext = async (user, requestedScope = {}) => {
+  const requestedOrganizationId = await resolveOrganizationScopeId(
+    requestedScope.organizationId,
+  );
+  const requestedBranchId = normalizeScopeId(requestedScope.branchId);
+
+  if (requestedBranchId && !requestedOrganizationId && user?.role !== "CORPORATE_ADMIN") {
+    return {
+      error: {
+        status: 400,
+        message: "organizationId is required when branchId is provided",
+      },
+    };
+  }
+
+  if (user?.role === "CORPORATE_ADMIN") {
+    const organizationId = normalizeScopeId(user.organizationId);
+
+    if (!organizationId) {
+      return {
+        error: {
+          status: 403,
+          message: "Organization access is required",
+        },
+      };
+    }
+
+    if (requestedOrganizationId && requestedOrganizationId !== organizationId) {
+      return {
+        error: {
+          status: 403,
+          message: "Access denied for the selected organization",
+        },
+      };
+    }
+
+    return {
+      organizationId,
+      branchId: requestedBranchId,
+    };
+  }
+
+  return {
+    organizationId: requestedOrganizationId,
+    branchId: requestedBranchId,
+  };
+};
+
+const getUserScopeFilterForRole = (role) => {
+  const scopeFilter = [];
+  const organizationId = normalizeScopeId(role?.organizationId);
+  const branchId = normalizeScopeId(role?.branchId);
+
+  if (organizationId) {
+    scopeFilter.push({ organizationId });
+  } else {
+    scopeFilter.push({
+      $or: [
+        { organizationId: null },
+        { organizationId: { $exists: false } },
+        { organizationId: "" },
+      ],
+    });
+  }
+
+  if (branchId) {
+    scopeFilter.push({ branchId });
+  } else {
+    scopeFilter.push(getBranchNullFilter());
+  }
+
+  return mergeAndClauses(...scopeFilter);
+};
 
 const ensureNormalizedRoleNames = async () => {
   const legacyRoles = await Role.find({
@@ -105,13 +288,18 @@ const ensureSystemRoles = async () => {
   await ensureNormalizedRoleNames();
 
   await Role.findOneAndUpdate(
-    { normalizedName: "WAITER", organizationId: null },
+    {
+      normalizedName: "WAITER",
+      organizationId: null,
+      $or: [{ branchId: null }, { branchId: { $exists: false } }, { branchId: "" }],
+    },
     {
       $setOnInsert: {
         name: "Waiter",
         normalizedName: "WAITER",
         description: "",
         category: ROLE_CATEGORY.BRANCH,
+        branchId: null,
         permissions: [],
       },
     },
@@ -320,7 +508,20 @@ exports.getRoles = async (req, res) => {
     await ensureBaseRoleCategories();
     await ensureAccountantRolePermissions();
 
-    const filter = getRoleAccessFilter(req.user) || {};
+    const scopedAccess = await getScopedAccessContext(
+      req.user,
+      await getRoleScopeFromRequest(req),
+    );
+    if (scopedAccess.error) {
+      return res.status(scopedAccess.error.status).json({
+        message: scopedAccess.error.message,
+      });
+    }
+
+    const filter = mergeAndClauses(
+      getRoleAccessFilter(req.user) || {},
+      getRoleScopeFilter(scopedAccess),
+    );
     const roles = await Role.find(filter)
       .populate("permissions", "_id name key module description")
       .sort({ type: 1, name: 1 });
@@ -355,7 +556,7 @@ exports.createRole = async (req, res) => {
 
     const name = String(req.body?.name || "").trim();
     const description = String(req.body?.description || "").trim();
-    const category = String(req.body?.category || ROLE_CATEGORY.BRANCH)
+    const requestedCategory = String(req.body?.category || ROLE_CATEGORY.BRANCH)
       .trim()
       .toUpperCase();
 
@@ -366,7 +567,7 @@ exports.createRole = async (req, res) => {
       });
     }
 
-    if (!UI_CREATABLE_ROLE_CATEGORIES.includes(category)) {
+    if (!UI_CREATABLE_ROLE_CATEGORIES.includes(requestedCategory)) {
       return res.status(400).json({
         success: false,
         message: "Invalid role category",
@@ -382,22 +583,54 @@ exports.createRole = async (req, res) => {
       });
     }
 
-    const organizationId =
-      req.user?.role === "CORPORATE_ADMIN"
-        ? String(req.user.organizationId || "").trim() || null
-        : null;
-
-    if (req.user?.role === "CORPORATE_ADMIN" && !organizationId) {
-      return res.status(403).json({
+    const scopedAccess = await getScopedAccessContext(
+      req.user,
+      await getRoleScopeFromRequest(req),
+    );
+    if (scopedAccess.error) {
+      return res.status(scopedAccess.error.status).json({
         success: false,
-        message: "Organization access is required to create roles",
+        message: scopedAccess.error.message,
       });
     }
 
-    const duplicate = await Role.findOne({
-      normalizedName,
-      $or: [{ organizationId }, { organizationId: { $exists: false } }],
-    }).lean();
+    const organizationId = normalizeScopeId(scopedAccess.organizationId);
+    const branchId = normalizeScopeId(scopedAccess.branchId);
+    const category = branchId
+      ? ROLE_CATEGORY.BRANCH
+      : organizationId
+        ? ROLE_CATEGORY.ORGANIZATION
+        : requestedCategory;
+
+    if (category === ROLE_CATEGORY.ORGANIZATION && !organizationId) {
+      return res.status(400).json({
+        success: false,
+        message: "Select an organization before creating an organization role",
+      });
+    }
+
+    if (category === ROLE_CATEGORY.BRANCH) {
+      if (!organizationId) {
+        return res.status(400).json({
+          success: false,
+          message: "Select an organization before creating a branch role",
+        });
+      }
+
+      if (!branchId) {
+        return res.status(400).json({
+          success: false,
+          message: "Select a branch before creating a branch role",
+        });
+      }
+    }
+
+    const duplicate = await Role.findOne(
+      mergeAndClauses(
+        { normalizedName },
+        getRoleScopeFilter({ organizationId, branchId }),
+      ),
+    ).lean();
 
     if (duplicate) {
       return res.status(409).json({
@@ -413,6 +646,7 @@ exports.createRole = async (req, res) => {
       type: "CUSTOM",
       category,
       organizationId,
+      branchId: category === ROLE_CATEGORY.BRANCH ? branchId : null,
       permissions: [],
     });
 
@@ -476,7 +710,21 @@ exports.updateRolePermissions = async (req, res) => {
       });
     }
 
-    const roleQuery = getAccessibleRoleQuery(req.user, roleId) || { _id: roleId };
+    const scopedAccess = await getScopedAccessContext(
+      req.user,
+      await getRoleScopeFromRequest(req),
+    );
+    if (scopedAccess.error) {
+      return res.status(scopedAccess.error.status).json({
+        success: false,
+        message: scopedAccess.error.message,
+      });
+    }
+
+    const roleQuery = mergeAndClauses(
+      getAccessibleRoleQuery(req.user, roleId) || { _id: roleId },
+      getRoleScopeFilter(scopedAccess),
+    );
     const role = roleQuery ? await Role.findOne(roleQuery) : null;
 
     if (!role) {
@@ -561,9 +809,12 @@ exports.updateRolePermissions = async (req, res) => {
     );
 
     await User.updateMany(
-      {
-        $or: [{ roleRef: role._id }, { role: role.normalizedName }],
-      },
+      mergeAndClauses(
+        {
+          $or: [{ roleRef: role._id }, { role: role.normalizedName }],
+        },
+        getUserScopeFilterForRole(role),
+      ),
       {
         $set: {
           permissions: nextPermissionKeys,
@@ -640,7 +891,12 @@ exports.deleteRole = async (req, res) => {
     }
 
     const assignedUsers = await User.countDocuments({
-      $or: [{ roleRef: role._id }, { role: role.normalizedName }],
+      $and: [
+        {
+          $or: [{ roleRef: role._id }, { role: role.normalizedName }],
+        },
+        getUserScopeFilterForRole(role),
+      ],
     });
 
     if (assignedUsers > 0) {

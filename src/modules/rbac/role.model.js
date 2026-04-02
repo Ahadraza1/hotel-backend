@@ -41,6 +41,12 @@ const roleSchema = new mongoose.Schema(
       index: true,
     },
 
+    branchId: {
+      type: String,
+      default: null,
+      index: true,
+    },
+
     permissions: [
       {
         type: mongoose.Schema.Types.ObjectId,
@@ -52,8 +58,8 @@ const roleSchema = new mongoose.Schema(
 );
 
 roleSchema.index(
-  { normalizedName: 1, organizationId: 1 },
-  { unique: true, name: "uniq_role_name_per_organization" },
+  { normalizedName: 1, organizationId: 1, branchId: 1 },
+  { unique: true, name: "uniq_role_name_per_scope" },
 );
 
 roleSchema.pre("validate", function () {
@@ -61,6 +67,16 @@ roleSchema.pre("validate", function () {
     this.name = this.name.trim();
     this.normalizedName = this.name.toUpperCase().replace(/\s+/g, "_");
   }
+
+  if (this.category === "BRANCH") {
+    this.branchId = this.branchId ? String(this.branchId).trim() : null;
+  } else {
+    this.branchId = null;
+  }
+
+  this.organizationId = this.organizationId
+    ? String(this.organizationId).trim()
+    : null;
 });
 
 module.exports = mongoose.model("Role", roleSchema);

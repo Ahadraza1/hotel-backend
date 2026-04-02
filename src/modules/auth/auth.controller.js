@@ -49,14 +49,23 @@ const normalizeInvitedRole = (role) => {
   return legacyRoleMap[role] || role;
 };
 
-const findRoleForInvite = async (normalizedRole) => {
+const normalizeScopeId = (value) => {
+  const normalized = String(value || "").trim();
+  return normalized || null;
+};
+
+const findRoleForInvite = async (
+  normalizedRole,
+  { organizationId = null, branchId = null } = {},
+) => {
   const roleNameWithSpaces = normalizedRole.replace(/_/g, " ");
   const roleNameRegex = new RegExp(
     `^${roleNameWithSpaces.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
     "i",
   );
-
-  return Role.findOne({
+  const normalizedOrganizationId = normalizeScopeId(organizationId);
+  const normalizedBranchId = normalizeScopeId(branchId);
+  const nameFilter = {
     $or: [
       { normalizedName: normalizedRole },
       { normalizedName: roleNameWithSpaces.toUpperCase().replace(/\s+/g, "_") },
@@ -64,7 +73,36 @@ const findRoleForInvite = async (normalizedRole) => {
       { name: roleNameWithSpaces },
       { name: roleNameRegex },
     ],
-  }).populate("permissions", "name key");
+  };
+  const scopedQueries = [
+    ...(normalizedOrganizationId && normalizedBranchId
+      ? [{ ...nameFilter, organizationId: normalizedOrganizationId, branchId: normalizedBranchId }]
+      : []),
+    ...(normalizedOrganizationId
+      ? [
+          {
+            ...nameFilter,
+            organizationId: normalizedOrganizationId,
+            $and: [{ $or: [{ branchId: null }, { branchId: { $exists: false } }, { branchId: "" }] }],
+          },
+        ]
+      : []),
+    {
+      ...nameFilter,
+      organizationId: null,
+      $and: [{ $or: [{ branchId: null }, { branchId: { $exists: false } }, { branchId: "" }] }],
+    },
+    nameFilter,
+  ];
+
+  for (const query of scopedQueries) {
+    const roleDoc = await Role.findOne(query).populate("permissions", "name key");
+    if (roleDoc) {
+      return roleDoc;
+    }
+  }
+
+  return null;
 };
 
 const getDepartmentFromRole = (role) => {
@@ -726,7 +764,10 @@ exports.acceptInvite = async (req, res) => {
       });
     }
 
-    const roleDoc = await findRoleForInvite(normalizedRole);
+    const roleDoc = await findRoleForInvite(normalizedRole, {
+      organizationId: invite.organizationId || null,
+      branchId: invite.branchId || null,
+    });
 
     if (!roleDoc) {
       return res.status(400).json({

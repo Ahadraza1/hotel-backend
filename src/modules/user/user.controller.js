@@ -322,10 +322,28 @@ exports.changeUserRole = async (req, res) => {
     }
 
     // 3. Fetch the new role and its permissions
+    const organizationId = String(targetUser.organizationId || "").trim() || null;
+    const branchId = String(targetUser.branchId || "").trim() || null;
+    const roleScopeQuery = branchId
+      ? { organizationId, branchId }
+      : organizationId
+        ? {
+            organizationId,
+            $or: [{ branchId: null }, { branchId: { $exists: false } }, { branchId: "" }],
+          }
+        : {
+            organizationId: null,
+            $or: [{ branchId: null }, { branchId: { $exists: false } }, { branchId: "" }],
+          };
     const roleQuery = roleId
       ? { _id: roleId }
       : {
-          $or: [{ normalizedName: roleKey }, { name: roleKey.replace(/_/g, " ") }],
+          ...roleScopeQuery,
+          $and: [
+            {
+              $or: [{ normalizedName: roleKey }, { name: roleKey.replace(/_/g, " ") }],
+            },
+          ],
         };
     const newRole = await Role.findOne(roleQuery).populate("permissions");
     if (!newRole) {
