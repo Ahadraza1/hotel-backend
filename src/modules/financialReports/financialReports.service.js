@@ -135,11 +135,6 @@ exports.getMonthlyRevenue = async () => {
 exports.getPlanDistribution = async () => {
   const rows = await OrganizationSubscription.aggregate([
     {
-      $match: {
-        status: "active",
-      },
-    },
-    {
       $group: {
         _id: "$planSnapshot.name",
         count: { $sum: 1 },
@@ -154,7 +149,8 @@ exports.getPlanDistribution = async () => {
 
   return rows.map((row) => ({
     name: row._id || "Unknown Plan",
-    value: total > 0 ? Math.round((row.count / total) * 100) : 0,
+    count: row.count,
+    value: total > 0 ? Number(((row.count / total) * 100).toFixed(1)) : 0,
   }));
 };
 
