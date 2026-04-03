@@ -14,8 +14,8 @@ app.use(express.json());
 
 app.use(
   cors({
-    origin: "http://localhost:8080",
-    origin: "https://hotel-frontend-six-woad.vercel.app",
+    // origin: "http://localhost:8080/",
+    origin: "https://hotel-frontend-six-woad.vercel.app/",
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: [
