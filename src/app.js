@@ -36,6 +36,10 @@ app.use(cookieParser());
 
 app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 
+app.get("/", (req, res) => {
+  res.send("Hotel Management Backend is running 🚀");
+});
+
 app.use("/api", routes);
 
 app.use(errorHandler);
