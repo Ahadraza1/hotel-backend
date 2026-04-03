@@ -31,10 +31,7 @@ const ROLE_CATEGORY = {
   ORGANIZATION: "ORGANIZATION",
   BRANCH: "BRANCH",
 };
-const UI_CREATABLE_ROLE_CATEGORIES = [
-  ROLE_CATEGORY.ORGANIZATION,
-  ROLE_CATEGORY.BRANCH,
-];
+const UI_CREATABLE_ROLE_CATEGORIES = Object.values(ROLE_CATEGORY);
 
 const normalizeRoleName = (value) =>
   String(value || "")
@@ -109,6 +106,17 @@ const getBranchNullFilter = () => ({
 const getRoleScopeFilter = ({ organizationId = null, branchId = null } = {}) => {
   const normalizedOrganizationId = normalizeScopeId(organizationId);
   const normalizedBranchId = normalizeScopeId(branchId);
+
+  if (!normalizedOrganizationId && !normalizedBranchId) {
+    return {
+      $or: [
+        { category: ROLE_CATEGORY.MAIN },
+        { normalizedName: "SUPER_ADMIN" },
+        { name: "SUPER_ADMIN" },
+        { name: "Super Admin" },
+      ],
+    };
+  }
 
   if (normalizedBranchId) {
     return mergeAndClauses(
@@ -441,6 +449,85 @@ const ensureAccountantRolePermissions = async () => {
   }
 };
 
+const ensureOrganizationCorporateAdminRole = async (organizationId) => {
+  const normalizedOrganizationId = normalizeScopeId(organizationId);
+
+  if (!normalizedOrganizationId) {
+    return null;
+  }
+
+  const existingScopedRole = await Role.findOne({
+    normalizedName: "CORPORATE_ADMIN",
+    organizationId: normalizedOrganizationId,
+    $or: [{ branchId: null }, { branchId: { $exists: false } }, { branchId: "" }],
+  });
+
+  if (existingScopedRole) {
+    return existingScopedRole;
+  }
+
+  const templateRole = await Role.findOne({
+    normalizedName: "CORPORATE_ADMIN",
+    $or: [
+      { organizationId: null },
+      { organizationId: { $exists: false } },
+      { organizationId: "" },
+    ],
+  }).select("name normalizedName description type permissions");
+
+  if (!templateRole) {
+    return null;
+  }
+
+  const scopedRole = await Role.findOneAndUpdate(
+    {
+      normalizedName: "CORPORATE_ADMIN",
+      organizationId: normalizedOrganizationId,
+      $or: [{ branchId: null }, { branchId: { $exists: false } }, { branchId: "" }],
+    },
+    {
+      $setOnInsert: {
+        name: templateRole.name || "CORPORATE_ADMIN",
+        normalizedName: "CORPORATE_ADMIN",
+        description: templateRole.description || "",
+        type: templateRole.type || "CUSTOM",
+        category: ROLE_CATEGORY.ORGANIZATION,
+        organizationId: normalizedOrganizationId,
+        branchId: null,
+        permissions: templateRole.permissions || [],
+      },
+    },
+    {
+      new: true,
+      upsert: true,
+    },
+  );
+
+  const populatedRole = await Role.findById(scopedRole._id).populate(
+    "permissions",
+    "_id name key module description",
+  );
+  const permissionKeys = (populatedRole?.permissions || [])
+    .map((permission) => permission.key || permission.name)
+    .filter(Boolean);
+
+  await User.updateMany(
+    {
+      organizationId: normalizedOrganizationId,
+      role: "CORPORATE_ADMIN",
+      $or: [{ branchId: null }, { branchId: { $exists: false } }, { branchId: "" }],
+    },
+    {
+      $set: {
+        roleRef: scopedRole._id,
+        permissions: permissionKeys,
+      },
+    },
+  );
+
+  return populatedRole;
+};
+
 const canViewRoles = (user) => {
   if (user?.role === "SUPER_ADMIN" || user?.role === "CORPORATE_ADMIN") {
     return true;
@@ -516,6 +603,10 @@ exports.getRoles = async (req, res) => {
       return res.status(scopedAccess.error.status).json({
         message: scopedAccess.error.message,
       });
+    }
+
+    if (scopedAccess.organizationId && !scopedAccess.branchId) {
+      await ensureOrganizationCorporateAdminRole(scopedAccess.organizationId);
     }
 
     const filter = mergeAndClauses(
@@ -600,7 +691,14 @@ exports.createRole = async (req, res) => {
       ? ROLE_CATEGORY.BRANCH
       : organizationId
         ? ROLE_CATEGORY.ORGANIZATION
-        : requestedCategory;
+        : ROLE_CATEGORY.MAIN;
+
+    if (category === ROLE_CATEGORY.MAIN && req.user?.role !== "SUPER_ADMIN") {
+      return res.status(403).json({
+        success: false,
+        message: "Only Super Admin can create global roles",
+      });
+    }
 
     if (category === ROLE_CATEGORY.ORGANIZATION && !organizationId) {
       return res.status(400).json({
@@ -645,7 +743,7 @@ exports.createRole = async (req, res) => {
       description,
       type: "CUSTOM",
       category,
-      organizationId,
+      organizationId: category === ROLE_CATEGORY.MAIN ? null : organizationId,
       branchId: category === ROLE_CATEGORY.BRANCH ? branchId : null,
       permissions: [],
     });
