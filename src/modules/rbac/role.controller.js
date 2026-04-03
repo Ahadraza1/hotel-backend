@@ -528,6 +528,99 @@ const ensureOrganizationCorporateAdminRole = async (organizationId) => {
   return populatedRole;
 };
 
+const ensureBranchScopedRoles = async (organizationId, branchId) => {
+  const normalizedOrganizationId = normalizeScopeId(organizationId);
+  const normalizedBranchId = normalizeScopeId(branchId);
+
+  if (!normalizedOrganizationId || !normalizedBranchId) {
+    return [];
+  }
+
+  const branchTemplates = await Role.find(
+    mergeAndClauses(
+      { category: ROLE_CATEGORY.BRANCH },
+      {
+        $or: [
+          { organizationId: null },
+          { organizationId: { $exists: false } },
+          { organizationId: "" },
+        ],
+      },
+      {
+        $or: [
+          { branchId: null },
+          { branchId: { $exists: false } },
+          { branchId: "" },
+        ],
+      },
+    ),
+  ).select("name normalizedName description type permissions");
+
+  if (branchTemplates.length === 0) {
+    return [];
+  }
+
+  const createdOrExistingRoles = [];
+
+  for (const templateRole of branchTemplates) {
+    const scopedRole = await Role.findOneAndUpdate(
+      {
+        normalizedName: templateRole.normalizedName,
+        organizationId: normalizedOrganizationId,
+        branchId: normalizedBranchId,
+      },
+      {
+        $setOnInsert: {
+          name: templateRole.name,
+          normalizedName: templateRole.normalizedName,
+          description: templateRole.description || "",
+          type: templateRole.type || "CUSTOM",
+          category: ROLE_CATEGORY.BRANCH,
+          organizationId: normalizedOrganizationId,
+          branchId: normalizedBranchId,
+          permissions: templateRole.permissions || [],
+        },
+      },
+      {
+        new: true,
+        upsert: true,
+      },
+    );
+
+    createdOrExistingRoles.push(scopedRole);
+  }
+
+  const populatedRoles = await Role.find({
+    _id: { $in: createdOrExistingRoles.map((role) => role._id) },
+  }).populate("permissions", "_id name key module description");
+
+  const scopedRoleMap = new Map(
+    populatedRoles.map((role) => [role.normalizedName, role]),
+  );
+
+  for (const [normalizedName, scopedRole] of scopedRoleMap) {
+    const permissionKeys = (scopedRole.permissions || [])
+      .map((permission) => permission.key || permission.name)
+      .filter(Boolean);
+
+    await User.updateMany(
+      {
+        organizationId: normalizedOrganizationId,
+        branchId: normalizedBranchId,
+        role: normalizedName,
+      },
+      {
+        $set: {
+          roleRef: scopedRole._id,
+          permissions: permissionKeys,
+        },
+      },
+    );
+  }
+
+  return populatedRoles;
+};
+
 const canViewRoles = (user) => {
   if (user?.role === "SUPER_ADMIN" || user?.role === "CORPORATE_ADMIN") {
     return true;
@@ -603,6 +696,13 @@ exports.getRoles = async (req, res) => {
       return res.status(scopedAccess.error.status).json({
         message: scopedAccess.error.message,
       });
+    }
+
+    if (scopedAccess.organizationId && scopedAccess.branchId) {
+      await ensureBranchScopedRoles(
+        scopedAccess.organizationId,
+        scopedAccess.branchId,
+      );
     }
 
     if (scopedAccess.organizationId && !scopedAccess.branchId) {
