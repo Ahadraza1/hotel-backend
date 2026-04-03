@@ -5,6 +5,14 @@ const { sendContactEmail } = require("../../utils/sendEmail");
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const phoneRegex = /^\d+$/;
 
+exports.getPublicContactDetails = asyncHandler(async (_req, res) => {
+  const contactEmail = process.env.CONTACT_EMAIL || process.env.EMAIL_USER || "";
+
+  res.status(200).json({
+    email: contactEmail,
+  });
+});
+
 exports.submitContactForm = asyncHandler(async (req, res) => {
   const name = req.body?.name?.trim();
   const email = req.body?.email?.trim();
