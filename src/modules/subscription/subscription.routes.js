@@ -66,6 +66,18 @@ router.post(
 );
 
 router.post(
+  "/organizations/:organizationId/cancel",
+  requireAuth,
+  requireSuperAdmin,
+  auditMiddleware(
+    "CANCEL_PLAN",
+    "SUBSCRIPTION",
+    "Cancelled organization subscription",
+  ),
+  subscriptionController.cancelOrganizationPlan,
+);
+
+router.post(
   "/checkout/order",
   requireAuth,
   requireCorporateAdmin,

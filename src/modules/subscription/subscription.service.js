@@ -567,6 +567,34 @@ exports.assignPlanToOrganization = async ({
   return serializeSubscription(organizationId, subscription);
 };
 
+exports.cancelOrganizationSubscription = async ({
+  organizationId,
+  assignedBy,
+}) => {
+  const organization = await Organization.findOne({ organizationId }).lean();
+
+  if (!organization) {
+    throw new Error("Organization not found");
+  }
+
+  const subscription = await OrganizationSubscription.findOne({ organizationId });
+
+  if (!subscription) {
+    throw new Error("No subscription found for this organization");
+  }
+
+  const now = new Date();
+
+  subscription.subscriptionStatus = "cancelled";
+  subscription.subscriptionEndDate = subscription.subscriptionEndDate || now;
+  subscription.trialEndDate = subscription.trialEndDate || now;
+  subscription.assignedBy = assignedBy || subscription.assignedBy || null;
+
+  await subscription.save();
+
+  return serializeSubscription(organizationId, subscription);
+};
+
 exports.getSubscriptionAccessForOrganization = async (organizationId) => {
   const subscription = await getOrganizationSubscriptionDoc(organizationId);
   return serializeSubscription(organizationId, subscription);

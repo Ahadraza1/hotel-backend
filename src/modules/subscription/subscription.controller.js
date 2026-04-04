@@ -93,6 +93,22 @@ exports.assignPlan = async (req, res) => {
   }
 };
 
+exports.cancelOrganizationPlan = async (req, res) => {
+  try {
+    const data = await subscriptionService.cancelOrganizationSubscription({
+      organizationId: req.params.organizationId,
+      assignedBy: req.user._id,
+    });
+
+    res.status(200).json({
+      message: "Subscription cancelled successfully",
+      data,
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+};
+
 exports.getBranchEligibility = async (req, res) => {
   try {
     const data = await subscriptionService.getBranchEligibility(
