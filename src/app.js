@@ -12,24 +12,33 @@ const app = express();
 
 app.use(express.json());
 
+const allowedOrigins = [
+  "http://localhost:8080",
+  "https://hotel-frontend-six-woad.vercel.app",
+];
+
 app.use(
   cors({
-    // origin: "http://localhost:8080/",
-    origin: "https://hotel-frontend-six-woad.vercel.app/",
+    origin: function (origin, callback) {
+      // allow requests with no origin (like mobile apps / Postman)
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-      "x-branch-id" // 🔥 IMPORTANT FIX
-    ],
-  })
+    allowedHeaders: ["Content-Type", "Authorization", "x-branch-id"],
+  }),
 );
 
 app.use(
   helmet({
     crossOriginResourcePolicy: false,
-  })
+  }),
 );
 
 app.use(morgan("dev"));
