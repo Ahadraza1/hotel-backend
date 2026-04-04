@@ -10,6 +10,11 @@ router.get("/signup-plans", authController.getSignupPlans);
 router.post("/organization-signup", authController.registerOrganization);
 router.post("/signup/checkout/order", authController.createSignupCheckoutOrder);
 router.post("/signup/checkout/verify", authController.verifySignupCheckout);
+router.post("/signup/checkout/fail", authController.markSignupCheckoutFailed);
+router.get(
+  "/signup/checkout/session/:checkoutReference",
+  authController.getSignupCheckoutSession,
+);
 router.post("/login", authController.login);
 router.post("/accept-invite", authController.acceptInvite);
 

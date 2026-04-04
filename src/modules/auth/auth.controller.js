@@ -5,6 +5,7 @@ const { v4: uuidv4 } = require("uuid");
 const bcrypt = require("bcryptjs");
 const User = require("../user/user.model");
 const RefreshToken = require("./refreshToken.model");
+const SignupCheckout = require("./signupCheckout.model");
 const generateAccessToken = require("../../utils/generateToken");
 const generateRefreshToken = require("../../utils/generateRefreshToken");
 const Role = require("../rbac/role.model");
@@ -39,6 +40,7 @@ const PLAN_ALIASES = {
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const passwordRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
+const SIGNUP_CHECKOUT_EXPIRY_MS = 2 * 60 * 60 * 1000;
 
 const normalizeInvitedRole = (role) => {
   const legacyRoleMap = {
@@ -205,6 +207,86 @@ const sanitizeSignupPayload = (payload = {}) => {
   };
 };
 
+const sanitizeCheckoutPayload = (payload = {}) => {
+  const customerName = String(payload.customerName || payload.name || "").trim();
+  const userEmail = String(payload.userEmail || payload.email || "")
+    .trim()
+    .toLowerCase();
+  const selectedPlanId = String(payload.selectedPlanId || payload.planId || "").trim();
+  const billingCycle = payload.billingCycle === "yearly" ? "yearly" : "monthly";
+
+  if (!customerName || !userEmail || !selectedPlanId) {
+    throw new Error("Name, email, and selected plan are required");
+  }
+
+  if (!emailRegex.test(userEmail)) {
+    throw new Error("A valid work email address is required");
+  }
+
+  return {
+    customerName,
+    userEmail,
+    selectedPlanId,
+    billingCycle,
+  };
+};
+
+const serializeSignupCheckout = (checkoutDoc) => ({
+  checkoutReference: checkoutDoc.checkoutReference,
+  planId: String(checkoutDoc.planId),
+  planName: checkoutDoc.planSnapshot?.name || "",
+  price: Number(checkoutDoc.amount || 0),
+  billingCycle: checkoutDoc.billingCycle,
+  email: checkoutDoc.userEmail,
+  name: checkoutDoc.customerName || "",
+  paymentStatus:
+    checkoutDoc.status === "success" || checkoutDoc.status === "consumed"
+      ? "success"
+      : checkoutDoc.status,
+  paymentId: checkoutDoc.paymentId || null,
+  orderId: checkoutDoc.orderId || null,
+  provider: checkoutDoc.provider || null,
+});
+
+const buildSignupCheckoutResponse = (checkoutDoc) => ({
+  ...serializeSignupCheckout(checkoutDoc),
+  paymentReference: {
+    checkoutReference: checkoutDoc.checkoutReference,
+    paymentId: checkoutDoc.paymentId || null,
+    orderId: checkoutDoc.orderId || null,
+    provider: checkoutDoc.provider || null,
+  },
+});
+
+const getValidSignupCheckout = async (checkoutReference, allowedStatuses = ["success"]) => {
+  const normalizedReference = String(checkoutReference || "").trim();
+
+  if (!normalizedReference) {
+    throw new Error("Checkout reference is required");
+  }
+
+  const checkoutDoc = await SignupCheckout.findOne({
+    checkoutReference: normalizedReference,
+  });
+
+  if (!checkoutDoc) {
+    throw new Error("Payment session not found");
+  }
+
+  if (
+    checkoutDoc.expiresAt &&
+    new Date(checkoutDoc.expiresAt).getTime() < Date.now()
+  ) {
+    throw new Error("Payment session expired. Please start again.");
+  }
+
+  if (!allowedStatuses.includes(checkoutDoc.status)) {
+    throw new Error("Payment has not been completed successfully");
+  }
+
+  return checkoutDoc;
+};
+
 const reserveSystemIdentifier = async (organizationName) => {
   const base = organizationName
     .replace(/[^A-Za-z0-9]+/g, "-")
@@ -234,6 +316,7 @@ const createOrganizationWithSubscription = async ({
   signupPayload,
   plan,
   payment,
+  checkoutDoc = null,
 }) => {
   const session = await mongoose.startSession();
 
@@ -342,6 +425,12 @@ const createOrganizationWithSubscription = async ({
       { session },
     );
 
+    if (checkoutDoc) {
+      checkoutDoc.status = "consumed";
+      checkoutDoc.consumedAt = now;
+      await checkoutDoc.save({ session });
+    }
+
     await session.commitTransaction();
 
     return {
@@ -443,21 +532,32 @@ exports.getSignupPlans = async (req, res) => {
 exports.registerOrganization = async (req, res) => {
   try {
     const signupPayload = sanitizeSignupPayload(req.body);
-    const plan = await subscriptionService.getPlanById(
-      signupPayload.selectedPlanId,
-    );
+    const checkoutDoc = await getValidSignupCheckout(req.body.checkoutReference, [
+      "success",
+    ]);
 
-    if (!subscriptionService.isFreePlan(plan, signupPayload.billingCycle)) {
+    if (signupPayload.adminEmail !== checkoutDoc.userEmail) {
       return res.status(400).json({
         message:
-          "Selected plan requires payment. Please complete payment first.",
+          "Corporate admin email must match the successful payment email.",
       });
     }
+
+    const plan = await subscriptionService.getPlanById(String(checkoutDoc.planId));
+
+    signupPayload.selectedPlanId = String(checkoutDoc.planId);
+    signupPayload.billingCycle = checkoutDoc.billingCycle;
 
     const result = await createOrganizationWithSubscription({
       signupPayload,
       plan,
-      payment: { provider: "free" },
+      payment: {
+        provider: checkoutDoc.provider || "razorpay",
+        orderId: checkoutDoc.orderId || null,
+        paymentId: checkoutDoc.paymentId || null,
+        signature: checkoutDoc.signature || null,
+      },
+      checkoutDoc,
     });
 
     res.status(201).json({
@@ -475,43 +575,77 @@ exports.registerOrganization = async (req, res) => {
 
 exports.createSignupCheckoutOrder = async (req, res) => {
   try {
-    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
-      return res.status(500).json({ message: "Razorpay is not configured" });
-    }
-
-    const signupPayload = sanitizeSignupPayload(req.body);
+    const checkoutPayload = sanitizeCheckoutPayload(req.body);
     const plan = await subscriptionService.getPlanById(
-      signupPayload.selectedPlanId,
+      checkoutPayload.selectedPlanId,
     );
-
-    if (subscriptionService.isFreePlan(plan, signupPayload.billingCycle)) {
-      return res.status(400).json({
-        message: "Selected plan does not require payment",
-      });
-    }
 
     const amount = subscriptionService.getPlanAmount(
       plan,
-      signupPayload.billingCycle,
+      checkoutPayload.billingCycle,
     );
+    const checkoutReference = uuidv4();
+    const expiresAt = new Date(Date.now() + SIGNUP_CHECKOUT_EXPIRY_MS);
+    const baseCheckoutData = {
+      checkoutReference,
+      customerName: checkoutPayload.customerName,
+      userEmail: checkoutPayload.userEmail,
+      planId: plan._id,
+      planSnapshot: subscriptionService.buildPlanSnapshot(plan),
+      billingCycle: checkoutPayload.billingCycle,
+      amount,
+      expiresAt,
+    };
+
+    if (subscriptionService.isFreePlan(plan, checkoutPayload.billingCycle)) {
+      const freeCheckout = await SignupCheckout.create({
+        ...baseCheckoutData,
+        provider: "free",
+        status: "success",
+        paymentId: `free_${Date.now()}`,
+        verifiedAt: new Date(),
+      });
+
+      return res.status(200).json({
+        data: {
+          paymentRequired: false,
+          ...buildSignupCheckoutResponse(freeCheckout),
+          plan: await subscriptionService.getSerializedPlanById(plan._id),
+        },
+      });
+    }
+
+    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+      return res.status(500).json({ message: "Razorpay is not configured" });
+    }
 
     const order = await razorpay.orders.create({
       amount: Math.round(amount * 100),
       currency: process.env.RAZORPAY_CURRENCY || "INR",
       receipt: `signup_${Date.now()}`.slice(0, 40),
       notes: {
+        checkoutReference,
         planId: String(plan._id),
-        billingCycle: signupPayload.billingCycle,
-        adminEmail: signupPayload.adminEmail,
+        billingCycle: checkoutPayload.billingCycle,
+        adminEmail: checkoutPayload.userEmail,
       },
+    });
+
+    await SignupCheckout.create({
+      ...baseCheckoutData,
+      provider: "razorpay",
+      status: "pending",
+      orderId: order.id,
     });
 
     res.status(200).json({
       data: {
+        paymentRequired: true,
+        checkoutReference,
         key: process.env.RAZORPAY_KEY_ID,
         order,
         amount,
-        billingCycle: signupPayload.billingCycle,
+        billingCycle: checkoutPayload.billingCycle,
         plan: await subscriptionService.getSerializedPlanById(plan._id),
       },
     });
@@ -525,7 +659,10 @@ exports.createSignupCheckoutOrder = async (req, res) => {
 
 exports.verifySignupCheckout = async (req, res) => {
   try {
-    const signupPayload = sanitizeSignupPayload(req.body);
+    const checkoutPayload = sanitizeCheckoutPayload(req.body);
+    const checkoutDoc = await getValidSignupCheckout(req.body.checkoutReference, [
+      "pending",
+    ]);
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } =
       req.body;
 
@@ -536,13 +673,19 @@ exports.verifySignupCheckout = async (req, res) => {
     }
 
     const plan = await subscriptionService.getPlanById(
-      signupPayload.selectedPlanId,
+      checkoutPayload.selectedPlanId,
     );
 
-    if (subscriptionService.isFreePlan(plan, signupPayload.billingCycle)) {
-      return res.status(400).json({
-        message: "Free plan does not require payment verification",
-      });
+    if (String(checkoutDoc.planId) !== String(plan._id)) {
+      return res.status(400).json({ message: "Selected plan mismatch" });
+    }
+
+    if (checkoutDoc.userEmail !== checkoutPayload.userEmail) {
+      return res.status(400).json({ message: "Checkout email mismatch" });
+    }
+
+    if (checkoutDoc.billingCycle !== checkoutPayload.billingCycle) {
+      return res.status(400).json({ message: "Billing cycle mismatch" });
     }
 
     const expectedSignature = crypto
@@ -566,33 +709,88 @@ exports.verifySignupCheckout = async (req, res) => {
 
     if (
       String(order.notes?.planId || "") !== String(plan._id) ||
-      String(order.notes?.billingCycle || "") !== signupPayload.billingCycle
+      String(order.notes?.billingCycle || "") !== checkoutPayload.billingCycle
     ) {
       return res.status(400).json({
         message: "Payment details do not match the selected plan",
       });
     }
 
-    const result = await createOrganizationWithSubscription({
-      signupPayload,
-      plan,
-      payment: {
-        provider: "razorpay",
-        orderId: razorpay_order_id,
-        paymentId: razorpay_payment_id,
-        signature: razorpay_signature,
-      },
-    });
+    checkoutDoc.customerName = checkoutPayload.customerName;
+    checkoutDoc.provider = "razorpay";
+    checkoutDoc.orderId = razorpay_order_id;
+    checkoutDoc.paymentId = razorpay_payment_id;
+    checkoutDoc.signature = razorpay_signature;
+    checkoutDoc.status = "success";
+    checkoutDoc.verifiedAt = new Date();
+    checkoutDoc.failureReason = null;
+    await checkoutDoc.save();
 
-    res.status(201).json({
-      message: "Organization registered successfully",
-      redirect: "/login",
-      data: result,
+    res.status(200).json({
+      message: "Payment verified successfully",
+      data: buildSignupCheckoutResponse(checkoutDoc),
     });
   } catch (error) {
     console.error("SIGNUP CHECKOUT VERIFY ERROR:", error);
     res.status(400).json({
       message: error.message || "Payment failed. Please try again.",
+    });
+  }
+};
+
+exports.markSignupCheckoutFailed = async (req, res) => {
+  try {
+    const checkoutReference = String(req.body.checkoutReference || "").trim();
+
+    if (!checkoutReference) {
+      return res.status(400).json({ message: "Checkout reference is required" });
+    }
+
+    const checkoutDoc = await SignupCheckout.findOne({ checkoutReference });
+
+    if (!checkoutDoc) {
+      return res.status(404).json({ message: "Payment session not found" });
+    }
+
+    checkoutDoc.status = "failed";
+    checkoutDoc.failureReason = String(
+      req.body.failureReason ||
+        req.body.error?.description ||
+        req.body.error?.reason ||
+        "Payment failed",
+    ).trim();
+
+    if (req.body.orderId) {
+      checkoutDoc.orderId = String(req.body.orderId);
+    }
+
+    await checkoutDoc.save();
+
+    res.status(200).json({
+      message: "Payment failure recorded",
+      data: buildSignupCheckoutResponse(checkoutDoc),
+    });
+  } catch (error) {
+    console.error("SIGNUP CHECKOUT FAILURE ERROR:", error);
+    res.status(400).json({
+      message: error.message || "Failed to record payment failure",
+    });
+  }
+};
+
+exports.getSignupCheckoutSession = async (req, res) => {
+  try {
+    const checkoutDoc = await getValidSignupCheckout(
+      req.params.checkoutReference || req.query.checkoutReference,
+      ["success"],
+    );
+
+    res.status(200).json({
+      data: buildSignupCheckoutResponse(checkoutDoc),
+    });
+  } catch (error) {
+    res.status(400).json({
+      message: error.message || "Failed to load payment session",
     });
   }
 };
