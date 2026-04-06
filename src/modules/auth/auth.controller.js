@@ -24,6 +24,7 @@ const {
   ensureActiveBranch,
   ensureActiveOrganization,
 } = require("../../utils/workspaceScope");
+const { sendPasswordResetOtpEmail } = require("../../utils/sendEmail");
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
@@ -41,6 +42,18 @@ const PLAN_ALIASES = {
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const passwordRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
 const SIGNUP_CHECKOUT_EXPIRY_MS = 2 * 60 * 60 * 1000;
+const PASSWORD_RESET_OTP_EXPIRY_MS = 5 * 60 * 1000;
+
+const normalizeEmail = (value = "") =>
+  String(value || "")
+    .trim()
+    .toLowerCase();
+
+const generateNumericOtp = (length = 6) =>
+  Array.from({ length }, () => crypto.randomInt(0, 10)).join("");
+
+const hashOtp = (otp) =>
+  crypto.createHash("sha256").update(String(otp)).digest("hex");
 
 const normalizeInvitedRole = (role) => {
   const legacyRoleMap = {
@@ -910,6 +923,147 @@ exports.login = async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Login failed" });
+  }
+};
+
+exports.sendPasswordResetOtp = async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email);
+
+    if (!email || !emailRegex.test(email)) {
+      return res.status(400).json({ message: "Your email is not correct" });
+    }
+
+    const user = await User.findOne({
+      email,
+      isDeleted: { $ne: true },
+    }).select("+passwordResetOtpHash");
+
+    if (!user) {
+      return res.status(404).json({ message: "Your email is not correct" });
+    }
+
+    const otp = generateNumericOtp(6);
+    user.passwordResetOtpHash = hashOtp(otp);
+    user.passwordResetOtpExpiresAt = new Date(
+      Date.now() + PASSWORD_RESET_OTP_EXPIRY_MS,
+    );
+    user.passwordResetOtpVerifiedAt = null;
+    await user.save();
+
+    await sendPasswordResetOtpEmail(user.email, otp);
+
+    return res.status(200).json({
+      message: "OTP sent successfully",
+    });
+  } catch (error) {
+    console.error("SEND PASSWORD RESET OTP ERROR:", error);
+    return res.status(500).json({
+      message: "Failed to send OTP",
+    });
+  }
+};
+
+exports.verifyPasswordResetOtp = async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email);
+    const otp = String(req.body?.otp || "").trim();
+
+    if (!email || !emailRegex.test(email)) {
+      return res.status(400).json({ message: "Your email is not correct" });
+    }
+
+    if (!/^\d{4}$|^\d{6}$/.test(otp)) {
+      return res.status(400).json({ message: "Invalid OTP" });
+    }
+
+    const user = await User.findOne({
+      email,
+      isDeleted: { $ne: true },
+    }).select("+passwordResetOtpHash");
+
+    if (
+      !user ||
+      !user.passwordResetOtpHash ||
+      !user.passwordResetOtpExpiresAt ||
+      user.passwordResetOtpExpiresAt.getTime() < Date.now() ||
+      user.passwordResetOtpHash !== hashOtp(otp)
+    ) {
+      return res.status(400).json({ message: "Invalid OTP" });
+    }
+
+    user.passwordResetOtpVerifiedAt = new Date();
+    await user.save();
+
+    return res.status(200).json({
+      message: "OTP verified successfully",
+    });
+  } catch (error) {
+    console.error("VERIFY PASSWORD RESET OTP ERROR:", error);
+    return res.status(500).json({
+      message: "Failed to verify OTP",
+    });
+  }
+};
+
+exports.resetPasswordWithOtp = async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email);
+    const newPassword = String(req.body?.newPassword || "");
+
+    if (!email || !emailRegex.test(email)) {
+      return res.status(400).json({ message: "Your email is not correct" });
+    }
+
+    if (!newPassword) {
+      return res.status(400).json({
+        message: "New password is required",
+      });
+    }
+
+    const user = await User.findOne({
+      email,
+      isDeleted: { $ne: true },
+    }).select("+password +passwordResetOtpHash");
+
+    if (!user) {
+      return res.status(404).json({ message: "Your email is not correct" });
+    }
+
+    if (!user.passwordResetOtpVerifiedAt) {
+      return res.status(400).json({
+        message: "OTP verification required",
+      });
+    }
+
+    if (
+      user.passwordResetOtpExpiresAt &&
+      user.passwordResetOtpExpiresAt.getTime() < Date.now()
+    ) {
+      user.passwordResetOtpHash = null;
+      user.passwordResetOtpExpiresAt = null;
+      user.passwordResetOtpVerifiedAt = null;
+      await user.save();
+
+      return res.status(400).json({
+        message: "Invalid OTP",
+      });
+    }
+
+    user.password = newPassword;
+    user.passwordResetOtpHash = null;
+    user.passwordResetOtpExpiresAt = null;
+    user.passwordResetOtpVerifiedAt = null;
+    await user.save();
+
+    return res.status(200).json({
+      message: "Password updated successfully",
+    });
+  } catch (error) {
+    console.error("RESET PASSWORD WITH OTP ERROR:", error);
+    return res.status(500).json({
+      message: "Failed to reset password",
+    });
   }
 };
 

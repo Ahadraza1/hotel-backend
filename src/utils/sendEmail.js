@@ -170,9 +170,29 @@ const sendContactEmail = async ({ name, email, phone, message }) => {
   return sendEmail(contactRecipient, subject, html);
 };
 
+const sendPasswordResetOtpEmail = async (email, otp) => {
+  const subject = "Your Luxury HMS password reset code";
+  const html = buildLuxuryEmailShell({
+    eyebrow: "HotelOS Security Desk",
+    title: "Password Reset Verification",
+    intro:
+      "Use the one-time password below to reset your Luxury HMS account password.",
+    details: `
+      <p style="margin: 0 0 12px; font-size: 15px; color: #4a3917;">Your verification code is:</p>
+      <p style="margin: 0; font-size: 32px; letter-spacing: 8px; font-weight: 700; color: #b48a2c; text-align: center;">${escapeHtml(otp)}</p>
+    `,
+    actionLabel: "Open Luxury HMS",
+    actionHref: process.env.FRONTEND_URL || "http://localhost:8080/login",
+    footerNote: "This OTP expires in 5 minutes. Do not share it with anyone.",
+  });
+
+  return sendEmail(email, subject, html);
+};
+
 module.exports = {
   sendEmail,
   sendCorporateAdminInvite,
   sendInvitationEmail,
   sendContactEmail,
+  sendPasswordResetOtpEmail,
 };
