@@ -33,6 +33,13 @@ router.get(
   posController.getSessionById
 );
 
+router.delete(
+  "/sessions/:sessionId",
+  requireAuth,
+  requirePermission("ACCESS_POS"),
+  posController.deleteSession
+);
+
 router.patch(
   "/sessions/:sessionId/guest",
   requireAuth,

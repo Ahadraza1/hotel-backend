@@ -56,6 +56,23 @@ exports.getSessionById = async (req, res) => {
   }
 };
 
+exports.deleteSession = async (req, res) => {
+  try {
+    const session = await posService.deleteSession(req.params.sessionId, req.user);
+
+    res.status(200).json({
+      success: true,
+      message: "Session deleted successfully",
+      data: session,
+    });
+  } catch (error) {
+    res.status(error.statusCode || 400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 exports.updateSessionGuestName = async (req, res) => {
   try {
     const session = await posService.updateSessionGuestName(
@@ -79,7 +96,11 @@ exports.updateSessionGuestName = async (req, res) => {
 
 exports.generateBill = async (req, res) => {
   try {
-    const invoice = await posService.generateBill(req.params.sessionId, req.user);
+    const invoice = await posService.generateBill(
+      req.params.sessionId,
+      req.user,
+      req.body,
+    );
 
     res.status(200).json({
       success: true,

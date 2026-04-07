@@ -1407,6 +1407,7 @@ const createSessionInvoice = async ({
   sessionRecord,
   orders,
   user,
+  discountPercentage = 0,
   dbSession = null,
 }) => {
   if (sessionRecord.invoiceId) {
@@ -1450,17 +1451,29 @@ const createSessionInvoice = async ({
   const totalAmount = roundCurrency(
     billableOrders.reduce((sum, order) => sum + Number(order.subTotal || 0), 0),
   );
-  const taxAmount = roundCurrency(
+  const taxSourceAmount = roundCurrency(
     billableOrders.reduce((sum, order) => sum + Number(order.totalTax || 0), 0),
   );
-  const serviceChargeAmount = roundCurrency(
+  const serviceChargeSourceAmount = roundCurrency(
     billableOrders.reduce((sum, order) => sum + Number(order.totalServiceCharge || 0), 0),
   );
+  const inferredTaxPercentage =
+    totalAmount > 0 ? (taxSourceAmount / totalAmount) * 100 : 0;
+  const inferredServiceChargePercentage =
+    totalAmount > 0 ? (serviceChargeSourceAmount / totalAmount) * 100 : 0;
+  const normalizedDiscountPercentage = Math.max(Number(discountPercentage || 0), 0);
   const discountAmount = roundCurrency(
-    billableOrders.reduce((sum, order) => sum + Number(order.discountAmount || 0), 0),
+    (totalAmount * normalizedDiscountPercentage) / 100,
+  );
+  const taxableBase = roundCurrency(Math.max(totalAmount - discountAmount, 0));
+  const taxAmount = roundCurrency(
+    (taxableBase * inferredTaxPercentage) / 100,
+  );
+  const serviceChargeAmount = roundCurrency(
+    (taxableBase * inferredServiceChargePercentage) / 100,
   );
   const finalAmount = roundCurrency(
-    billableOrders.reduce((sum, order) => sum + Number(order.grandTotal || 0), 0),
+    taxableBase + taxAmount + serviceChargeAmount,
   );
 
   const payload = {
@@ -1607,6 +1620,44 @@ exports.getSessionById = async (sessionId, user) => {
   return buildSessionSummary(sessionRecord, orders, invoice);
 };
 
+exports.deleteSession = async (sessionId, user) => {
+  requirePermission(user, "ACCESS_POS");
+
+  const { branchId } = await resolveOrganizationContext(user);
+  const sessionRecord = await POSSession.findOne({
+    sessionId,
+    branchId,
+    isActive: true,
+  });
+
+  if (!sessionRecord) {
+    throw new Error("Session not found");
+  }
+
+  await POSOrder.updateMany(
+    {
+      sessionId,
+      branchId,
+      isActive: true,
+    },
+    {
+      $set: {
+        isActive: false,
+      },
+    },
+  );
+
+  sessionRecord.isActive = false;
+  sessionRecord.updatedBy = user._id;
+  await sessionRecord.save();
+
+  if (sessionRecord.tableId) {
+    await syncTableOccupancyFromSessions(sessionRecord.tableId);
+  }
+
+  return buildSessionSummary(sessionRecord, []);
+};
+
 exports.updateSessionGuestName = async (sessionId, guestName, user) => {
   requirePermission(user, "ACCESS_POS");
 
@@ -1727,7 +1778,7 @@ exports.transferSession = async (sessionId, data, user) => {
   }
 };
 
-exports.generateBill = async (sessionId, user) => {
+exports.generateBill = async (sessionId, user, data = {}) => {
   requirePermission(user, "ACCESS_POS");
 
   const { branchId } = await resolveOrganizationContext(user);
@@ -1771,6 +1822,7 @@ exports.generateBill = async (sessionId, user) => {
       sessionRecord,
       orders,
       user,
+      discountPercentage: data.discountPercentage,
       dbSession,
     });
 
