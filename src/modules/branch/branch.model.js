@@ -23,6 +23,21 @@ const branchSchema = new mongoose.Schema(
       trim: true,
     },
 
+    country: {
+      type: String,
+      trim: true,
+    },
+
+    state: {
+      type: String,
+      trim: true,
+    },
+
+    city: {
+      type: String,
+      trim: true,
+    },
+
     address: {
       type: String,
       trim: true,
