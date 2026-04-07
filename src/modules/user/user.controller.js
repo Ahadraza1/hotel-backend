@@ -3,6 +3,8 @@ const Role = require("../rbac/role.model");
 const bcrypt = require("bcryptjs");
 const mongoose = require("mongoose");
 const Staff = require("../hr/staff.model");
+const Organization = require("../organization/organization.model");
+const Branch = require("../branch/branch.model");
 
 const ensureUserManagementAccess = (actor, targetUser) => {
   if (actor.role === "SUPER_ADMIN") {
@@ -102,9 +104,73 @@ exports.getUsers = async (req, res) => {
       .select("-password")
       .populate("roleRef", "_id name normalizedName");
 
+    const organizationIds = [
+      ...new Set(
+        users
+          .map((user) => String(user.organizationId || "").trim())
+          .filter(Boolean),
+      ),
+    ];
+
+    const branchIds = [
+      ...new Set(
+        users
+          .map((user) => String(user.branchId || "").trim())
+          .filter(Boolean),
+      ),
+    ];
+
+    const [organizations, branches] = await Promise.all([
+      organizationIds.length
+        ? Organization.find({
+            organizationId: { $in: organizationIds },
+            isDeleted: { $ne: true },
+          }).select("organizationId name")
+        : [],
+      branchIds.length
+        ? Branch.find({
+            _id: { $in: branchIds.filter((id) => mongoose.Types.ObjectId.isValid(id)) },
+            isDeleted: { $ne: true },
+          }).select("_id name organizationId")
+        : [],
+    ]);
+
+    const organizationMap = new Map(
+      organizations.map((organization) => [
+        String(organization.organizationId),
+        {
+          organizationId: organization.organizationId,
+          name: organization.name,
+        },
+      ]),
+    );
+
+    const branchMap = new Map(
+      branches.map((branch) => [
+        String(branch._id),
+        {
+          _id: branch._id,
+          name: branch.name,
+          organizationId: branch.organizationId,
+        },
+      ]),
+    );
+
+    const usersWithWorkspaceNames = users.map((user) => {
+      const userObject = user.toObject();
+      const organization = organizationMap.get(String(user.organizationId || "").trim()) || null;
+      const branch = branchMap.get(String(user.branchId || "").trim()) || null;
+
+      return {
+        ...userObject,
+        organization,
+        branch,
+      };
+    });
+
     res.status(200).json({
-      count: users.length,
-      data: users,
+      count: usersWithWorkspaceNames.length,
+      data: usersWithWorkspaceNames,
     });
   } catch (error) {
     res.status(500).json({
