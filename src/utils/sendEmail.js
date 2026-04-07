@@ -170,6 +170,51 @@ const sendContactEmail = async ({ name, email, phone, message }) => {
   return sendEmail(contactRecipient, subject, html);
 };
 
+const sendContactThankYouEmail = async ({ name, email }) => {
+  const subject = "Thank You for Contacting Us";
+  const supportEmail = process.env.CONTACT_EMAIL || process.env.EMAIL_USER;
+  const safeName = escapeHtml(name || "Guest");
+  const safeSupportEmail = escapeHtml(supportEmail || process.env.EMAIL_USER || "");
+
+  const html = `
+<div style="font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #f4efe6; margin: 0; padding: 32px 16px; color: #2d2004;">
+  <div style="max-width: 640px; margin: 0 auto; background: #fffdf9; border: 1px solid rgba(176,141,87,0.25); border-radius: 18px; overflow: hidden; box-shadow: 0 24px 60px rgba(32, 22, 4, 0.12);">
+    <div style="background: linear-gradient(135deg, #18140d 0%, #2d220f 100%); padding: 32px 40px; border-bottom: 4px solid #b48a2c;">
+      <p style="margin: 0 0 8px; color: #e2c98c; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; font-weight: 700;">HotelOS Customer Support</p>
+      <h2 style="margin: 0; color: #ffffff; font-size: 28px; line-height: 1.2; font-weight: 700;">Thank You for Contacting Us</h2>
+    </div>
+
+    <div style="padding: 32px 40px;">
+      <p style="margin: 0 0 16px; color: #6b5a3a; font-size: 15px; line-height: 1.8;">Dear <strong style="color: #2d2004;">${safeName}</strong>,</p>
+
+      <p style="margin: 0 0 16px; color: #6b5a3a; font-size: 15px; line-height: 1.8;">Thank you for reaching out to us.</p>
+
+      <p style="margin: 0 0 16px; color: #6b5a3a; font-size: 15px; line-height: 1.8;">We have received your message and our team will review your request shortly. We aim to respond as quickly as possible with the appropriate information or assistance you need.</p>
+
+      <p style="margin: 0 0 24px; color: #6b5a3a; font-size: 15px; line-height: 1.8;">If your inquiry is urgent, please feel free to reply to this email.</p>
+
+      <div style="background: #fbf7f0; border: 1px solid rgba(176,141,87,0.18); border-radius: 14px; padding: 24px; margin-bottom: 24px;">
+        <p style="margin: 0 0 12px; font-size: 15px; color: #4a3917;">We appreciate your interest in our services and look forward to assisting you.</p>
+        <p style="margin: 0; font-size: 15px; line-height: 1.8; color: #4a3917;">
+          Warm regards,<br />
+          Team HoteIOS<br />
+          Customer Support Team
+        </p>
+      </div>
+
+      ${
+        safeSupportEmail
+          ? `<p style="margin: 0; color: #8a6a30; font-size: 13px; line-height: 1.7;">Support email: ${safeSupportEmail}</p>`
+          : ""
+      }
+    </div>
+  </div>
+</div>
+`;
+
+  return sendEmail(email, subject, html);
+};
+
 const sendPasswordResetOtpEmail = async (email, otp) => {
   const subject = "Your Luxury HMS password reset code";
   const html = buildLuxuryEmailShell({
@@ -194,5 +239,6 @@ module.exports = {
   sendCorporateAdminInvite,
   sendInvitationEmail,
   sendContactEmail,
+  sendContactThankYouEmail,
   sendPasswordResetOtpEmail,
 };
