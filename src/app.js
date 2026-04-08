@@ -24,7 +24,7 @@ app.use(
       if (allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
-        callback(null, true); // ✅ allow instead of throwing error
+        callback(null, true);
       }
     },
     credentials: true,
@@ -33,8 +33,13 @@ app.use(
   })
 );
 
-// ✅ handle preflight requests
-app.options("/{*any}", cors());
+// ✅ FIXED preflight handler (ONLY CHANGE)
+app.use((req, res, next) => {
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 app.use(express.json());
 
