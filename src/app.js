@@ -10,35 +10,38 @@ const routes = require("./routes");
 
 const app = express();
 
-app.use(express.json());
-
 const allowedOrigins = [
   "http://localhost:8080",
   "https://hotel-frontend-six-woad.vercel.app",
 ];
 
+// ✅ CORS should be BEFORE everything
 app.use(
   cors({
     origin: function (origin, callback) {
-      // allow requests with no origin (like mobile apps / Postman)
       if (!origin) return callback(null, true);
 
       if (allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
-        callback(new Error("Not allowed by CORS"));
+        callback(null, true); // ✅ allow instead of throwing error
       }
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "x-branch-id"],
-  }),
+  })
 );
+
+// ✅ handle preflight requests
+app.options("/{*any}", cors());
+
+app.use(express.json());
 
 app.use(
   helmet({
     crossOriginResourcePolicy: false,
-  }),
+  })
 );
 
 app.use(morgan("dev"));
