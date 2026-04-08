@@ -2,7 +2,7 @@ const crypto = require("crypto");
 const Invitation = require("./invitation.model");
 const User = require("../user/user.model");
 const Role = require("../rbac/role.model");
-const { sendEmail } = require("../../utils/sendEmail");
+const { sendInvitationEmail } = require("../../utils/sendEmail");
 const InvitationAudit = require("./invitationAudit.model");
 const Organization = require("../organization/organization.model");
 const Branch = require("../branch/branch.model");
@@ -76,6 +76,48 @@ const getDepartmentFromRole = (role) => {
   return roleDepartmentMap[normalizedRole] || "MANAGEMENT";
 };
 
+const normalizeEmploymentType = (employmentType) => {
+  const normalizedValue = String(employmentType || "").trim();
+  const employmentTypeMap = {
+    FULL_TIME: "Full-time",
+    PART_TIME: "Part-time",
+    CONTRACT: "Contract",
+    "Full-time": "Full-time",
+    "Part-time": "Part-time",
+    Contract: "Contract",
+  };
+
+  return employmentTypeMap[normalizedValue] || "Full-time";
+};
+
+const normalizeShift = (shift) => {
+  const normalizedValue = String(shift || "").trim();
+  const shiftMap = {
+    MORNING: "Morning",
+    EVENING: "Evening",
+    NIGHT: "Night",
+    Morning: "Morning",
+    Evening: "Evening",
+    Night: "Night",
+  };
+
+  return shiftMap[normalizedValue] || "";
+};
+
+const normalizeStaffStatus = (status, fallback = "Invited") => {
+  const normalizedValue = String(status || "").trim();
+  const statusMap = {
+    INVITED: "Invited",
+    ACTIVE: "Active",
+    SUSPENDED: "Suspended",
+    Invited: "Invited",
+    Active: "Active",
+    Suspended: "Suspended",
+  };
+
+  return statusMap[normalizedValue] || fallback;
+};
+
 // Helper: Check role permission
 const canInviteRole = (inviterRole, targetRole) => {
   if (inviterRole === "SUPER_ADMIN") return true;
@@ -100,7 +142,18 @@ const canInviteRole = (inviterRole, targetRole) => {
 // ================= CREATE INVITE =================
 exports.createInvitation = async (req, res) => {
   try {
-    const { name, email, role, salary } = req.body;
+    const {
+      name,
+      email,
+      role,
+      salary,
+      phone,
+      department,
+      shift,
+      employmentType,
+      joinedDate,
+      status,
+    } = req.body;
     const Staff = require("../hr/staff.model");
 
     if (!name || !email || !role) {
@@ -196,6 +249,12 @@ exports.createInvitation = async (req, res) => {
       email,
       role,
       salary: Number.isFinite(Number(salary)) ? Number(salary) : 0,
+      phone: phone?.trim() || "",
+      department: department?.trim() || getDepartmentFromRole(role),
+      shift: normalizeShift(shift) || undefined,
+      employmentType: normalizeEmploymentType(employmentType),
+      joinedDate: joinedDate || new Date(),
+      staffStatus: normalizeStaffStatus(status, "Invited"),
       organizationId,
       branchId,
       invitedBy: inviter._id,
@@ -238,10 +297,14 @@ exports.createInvitation = async (req, res) => {
           firstName,
           lastName,
           email: normalizedEmail,
-          department: getDepartmentFromRole(role),
+          phone: phone?.trim() || "",
+          department: department?.trim() || getDepartmentFromRole(role),
           designation: normalizedRole,
+          shift: normalizeShift(shift) || undefined,
+          employmentType: normalizeEmploymentType(employmentType),
+          status: normalizeStaffStatus(status, "Invited"),
           salary: salaryValue,
-          joiningDate: req.body.joinedDate || new Date(),
+          joiningDate: joinedDate || new Date(),
           createdBy: inviter._id,
           isDeleted: false,
         });
@@ -251,14 +314,18 @@ exports.createInvitation = async (req, res) => {
         existingStaff.userId = existingStaff.userId || null;
         existingStaff.firstName = firstName;
         existingStaff.lastName = lastName;
-        existingStaff.department = getDepartmentFromRole(role);
+        existingStaff.phone = phone?.trim() || existingStaff.phone;
+        existingStaff.department = department?.trim() || getDepartmentFromRole(role);
         existingStaff.designation = normalizedRole;
+        existingStaff.shift = normalizeShift(shift) || existingStaff.shift;
+        existingStaff.employmentType = normalizeEmploymentType(employmentType);
+        existingStaff.status = normalizeStaffStatus(status, "Invited");
         existingStaff.salary = salaryValue;
         existingStaff.isActive = true;
         existingStaff.isDeleted = false;
         existingStaff.deletedAt = null;
         if (!existingStaff.joiningDate) {
-          existingStaff.joiningDate = req.body.joinedDate || new Date();
+          existingStaff.joiningDate = joinedDate || new Date();
         }
         await existingStaff.save();
       }
@@ -392,7 +459,14 @@ exports.createInvitation = async (req, res) => {
 </div>
 `;
 
-    await sendEmail(email, "You're Invited!", luxuryHtml);
+    await sendInvitationEmail(
+      email,
+      name,
+      role,
+      inviteLink,
+      organization?.name || "Hotel Management System",
+      branch?.name || null,
+    );
 
     return res.status(201).json({
       message: "Invitation sent successfully",
@@ -503,12 +577,16 @@ exports.acceptInvitation = async (req, res) => {
         firstName,
         lastName,
         email: invitation.email?.trim().toLowerCase(),
-        department: getDepartmentFromRole(invitation.role),
+        phone: invitation.phone || "",
+        department: invitation.department || getDepartmentFromRole(invitation.role),
         designation: normalizedRole,
+        shift: normalizeShift(invitation.shift) || undefined,
+        employmentType: normalizeEmploymentType(invitation.employmentType),
+        status: "Active",
         salary: Number.isFinite(Number(invitation.salary))
           ? Number(invitation.salary)
           : 0,
-        joiningDate: new Date(),
+        joiningDate: invitation.joinedDate || new Date(),
         createdBy: newUser._id,
       });
     } else {
@@ -518,15 +596,21 @@ exports.acceptInvitation = async (req, res) => {
       existingStaff.firstName = firstName;
       existingStaff.lastName = lastName;
       existingStaff.email = invitation.email?.trim().toLowerCase();
-      existingStaff.department = getDepartmentFromRole(invitation.role);
+      existingStaff.phone = invitation.phone || existingStaff.phone;
+      existingStaff.department = invitation.department || getDepartmentFromRole(invitation.role);
       existingStaff.designation = normalizedRole;
+      existingStaff.shift = normalizeShift(invitation.shift) || existingStaff.shift;
+      existingStaff.employmentType = normalizeEmploymentType(invitation.employmentType);
       existingStaff.salary = Number.isFinite(Number(invitation.salary))
         ? Number(invitation.salary)
         : 0;
+      existingStaff.status = "Active";
       existingStaff.createdBy = newUser._id;
       existingStaff.isActive = true;
       existingStaff.isDeleted = false;
       existingStaff.deletedAt = null;
+      existingStaff.joiningDate =
+        existingStaff.joiningDate || invitation.joinedDate || new Date();
       await existingStaff.save();
     }
 
@@ -670,7 +754,27 @@ exports.resendInvitation = async (req, res) => {
 </div>
     `;
 
-    await sendEmail(invitation.email, "Invitation Reminder", luxuryHtml);
+    let organization = null;
+    let branch = null;
+
+    if (invitation.organizationId) {
+      organization = await Organization.findOne({
+        organizationId: invitation.organizationId,
+      });
+    }
+
+    if (invitation.branchId) {
+      branch = await Branch.findById(invitation.branchId);
+    }
+
+    await sendInvitationEmail(
+      invitation.email,
+      invitation.name,
+      invitation.role,
+      inviteLink,
+      organization?.name || "Hotel Management System",
+      branch?.name || null,
+    );
 
     return res.status(200).json({
       message: "Invitation resent successfully",

@@ -54,17 +54,8 @@ const staffSchema = new mongoose.Schema(
 
     department: {
       type: String,
-      enum: [
-        "FRONT_OFFICE",
-        "HOUSEKEEPING",
-        "RESTAURANT",
-        "ACCOUNTS",
-        "FINANCE",
-        "HR",
-        "MAINTENANCE",
-        "MANAGEMENT",
-      ],
       required: true,
+      trim: true,
       index: true,
     },
 
@@ -73,10 +64,29 @@ const staffSchema = new mongoose.Schema(
       required: true,
     },
 
+    shift: {
+      type: String,
+      enum: ["Morning", "Evening", "Night"],
+    },
+
     employmentType: {
       type: String,
-      enum: ["FULL_TIME", "PART_TIME", "CONTRACT"],
-      default: "FULL_TIME",
+      enum: [
+        "FULL_TIME",
+        "PART_TIME",
+        "CONTRACT",
+        "Full-time",
+        "Part-time",
+        "Contract",
+      ],
+      default: "Full-time",
+    },
+
+    status: {
+      type: String,
+      enum: ["Invited", "Active", "Suspended"],
+      default: "Invited",
+      index: true,
     },
 
     salary: {

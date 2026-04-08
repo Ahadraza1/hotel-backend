@@ -25,6 +25,37 @@ const invitationSchema = new mongoose.Schema(
       required: true,
     },
 
+    phone: {
+      type: String,
+      trim: true,
+    },
+
+    department: {
+      type: String,
+      trim: true,
+    },
+
+    shift: {
+      type: String,
+      enum: ["Morning", "Evening", "Night"],
+    },
+
+    employmentType: {
+      type: String,
+      enum: ["Full-time", "Part-time", "Contract"],
+      default: "Full-time",
+    },
+
+    joinedDate: {
+      type: Date,
+    },
+
+    staffStatus: {
+      type: String,
+      enum: ["Invited", "Active", "Suspended"],
+      default: "Invited",
+    },
+
     organizationId: {
       type: String, // ✅ FIXED (was ObjectId)
       required: true,

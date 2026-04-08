@@ -1,6 +1,7 @@
 const Staff = require("./staff.model");
 const Attendance = require("./attendance.model");
 const Payroll = require("./payroll.model");
+const Invitation = require("../invitation/invitation.model");
 const mongoose = require("mongoose");
 const User = require("../user/user.model");
 const Role = require("../rbac/role.model");
@@ -79,17 +80,6 @@ const normalizeSalary = (salary) => {
   return Number.isFinite(parsedSalary) ? parsedSalary : 0;
 };
 
-const STAFF_DEPARTMENTS = [
-  "FRONT_OFFICE",
-  "HOUSEKEEPING",
-  "RESTAURANT",
-  "HR",
-  "ACCOUNTS",
-  "FINANCE",
-  "MAINTENANCE",
-  "MANAGEMENT",
-];
-
 const STAFF_DESIGNATIONS = [
   "RECEPTIONIST",
   "HOUSEKEEPING",
@@ -105,10 +95,7 @@ const STAFF_DESIGNATIONS = [
 ];
 
 const normalizeDepartmentValue = (department) =>
-  String(department || "")
-    .trim()
-    .toUpperCase()
-    .replace(/\s+/g, "_");
+  String(department || "").trim();
 
 const normalizeDesignationValue = (designation, role) =>
   String(designation || role || "")
@@ -134,6 +121,48 @@ const findRoleByDesignation = async (designation) => {
   })
     .select("_id name normalizedName")
     .lean();
+};
+
+const normalizeEmploymentType = (employmentType) => {
+  const normalizedValue = String(employmentType || "").trim();
+  const employmentTypeMap = {
+    FULL_TIME: "Full-time",
+    PART_TIME: "Part-time",
+    CONTRACT: "Contract",
+    "Full-time": "Full-time",
+    "Part-time": "Part-time",
+    Contract: "Contract",
+  };
+
+  return employmentTypeMap[normalizedValue] || "Full-time";
+};
+
+const normalizeShift = (shift) => {
+  const normalizedValue = String(shift || "").trim();
+  const shiftMap = {
+    MORNING: "Morning",
+    EVENING: "Evening",
+    NIGHT: "Night",
+    Morning: "Morning",
+    Evening: "Evening",
+    Night: "Night",
+  };
+
+  return shiftMap[normalizedValue] || "";
+};
+
+const normalizeStaffStatus = (status, fallback = "Active") => {
+  const normalizedValue = String(status || "").trim();
+  const statusMap = {
+    INVITED: "Invited",
+    ACTIVE: "Active",
+    SUSPENDED: "Suspended",
+    Invited: "Invited",
+    Active: "Active",
+    Suspended: "Suspended",
+  };
+
+  return statusMap[normalizedValue] || fallback;
 };
 
 const findLinkedStaffForUser = async (user, branchId) => {
@@ -266,7 +295,9 @@ exports.createStaff = async (data, user) => {
     phone: data.phone?.trim(),
     department: normalizeDepartmentValue(data.department) || "MANAGEMENT",
     designation,
-    employmentType: data.employmentType,
+    shift: normalizeShift(data.shift) || undefined,
+    employmentType: normalizeEmploymentType(data.employmentType),
+    status: normalizeStaffStatus(data.status, "Active"),
     salary: normalizeSalary(data.salary),
     overtimeRatePerHour: data.overtimeRatePerHour,
     shiftStart: data.shiftStart,
@@ -279,9 +310,7 @@ exports.createStaff = async (data, user) => {
     createdBy: user.id || user.userId || user._id,
   };
 
-  const staff = await Staff.create({
-    ...staffPayload,
-  });
+  const staff = await Staff.create(staffPayload);
 
   await notificationService.createNotificationSafely({
     title: "Staff member added",
@@ -353,8 +382,13 @@ exports.getStaff = async (user, branchId) => {
     isActive: true,
     isDeleted: { $ne: true },
   }).select(
-    "staffId firstName lastName department designation salary email branchId organizationId createdBy userId",
+    "staffId firstName lastName department designation salary email phone shift employmentType status branchId organizationId createdBy userId",
   );
+
+  const invitations = await Invitation.find({
+    branchId: branchFilter,
+    status: "pending",
+  }).select("_id email status");
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -375,6 +409,7 @@ exports.getStaff = async (user, branchId) => {
   const staffByEmailMap = new Map();
   const staffByCreatorMap = new Map();
   const staffByNameMap = new Map();
+  const invitationByEmailMap = new Map();
   staff.forEach((s) => {
     if (s.email) {
       staffByEmailMap.set(s.email.trim().toLowerCase(), s);
@@ -390,6 +425,12 @@ exports.getStaff = async (user, branchId) => {
 
     if (normalizedStaffName) {
       staffByNameMap.set(normalizedStaffName, s);
+    }
+  });
+
+  invitations.forEach((invitation) => {
+    if (invitation.email) {
+      invitationByEmailMap.set(invitation.email.trim().toLowerCase(), invitation);
     }
   });
 
@@ -422,12 +463,24 @@ exports.getStaff = async (user, branchId) => {
       department: staffData?.department || "—",
 
       designation: staffData?.designation || u.role,
+      phone: staffData?.phone || "",
+      shift: staffData?.shift || "",
+      employmentType: normalizeEmploymentType(staffData?.employmentType),
+      status:
+        staffData?.status === "Suspended"
+          ? "Suspended"
+          : invitationByEmailMap.has(u.email?.trim().toLowerCase())
+            ? "Invited"
+            : normalizeStaffStatus(staffData?.status, "Active"),
 
       salary: staffData?.salary ?? 0,
       attendanceStatus:
         attendanceStatusMap.get(staffData?.staffId || u._id.toString()) || "—",
 
       email: u.email,
+      invitationId:
+        invitationByEmailMap.get(u.email?.trim().toLowerCase())?._id?.toString() ||
+        null,
     };
     })
     .filter((row) => row.staffId && matchedStaffIds.size >= 0)
@@ -445,13 +498,25 @@ exports.getStaff = async (user, branchId) => {
     .map((staffMember) => ({
       _id: staffMember._id.toString(),
       staffId: staffMember.staffId,
+      phone: staffMember.phone || "",
+      shift: staffMember.shift || "",
+      employmentType: normalizeEmploymentType(staffMember.employmentType),
       firstName: staffMember.firstName || "—",
       lastName: staffMember.lastName || "",
       department: staffMember.department || "—",
       designation: staffMember.designation || "—",
+      status:
+        staffMember.status === "Suspended"
+          ? "Suspended"
+          : invitationByEmailMap.has(staffMember.email?.trim().toLowerCase())
+            ? "Invited"
+            : normalizeStaffStatus(staffMember.status, "Active"),
       salary: staffMember.salary ?? 0,
       attendanceStatus: attendanceStatusMap.get(staffMember.staffId) || "—",
       email: staffMember.email,
+      invitationId:
+        invitationByEmailMap.get(staffMember.email?.trim().toLowerCase())?._id?.toString() ||
+        null,
     }));
 
   return [...userRows, ...standaloneStaffRows];
@@ -490,12 +555,6 @@ exports.updateStaff = async (staffId, data, user) => {
     throw error;
   }
 
-  if (!STAFF_DEPARTMENTS.includes(department)) {
-    const error = new Error("Invalid department selected");
-    error.statusCode = 400;
-    throw error;
-  }
-
   if (!designation) {
     const error = new Error("Designation is required");
     error.statusCode = 400;
@@ -518,8 +577,20 @@ exports.updateStaff = async (staffId, data, user) => {
 
   staff.firstName = firstName;
   staff.lastName = lastName;
+  staff.phone =
+    data.phone !== undefined ? String(data.phone || "").trim() : staff.phone;
   staff.department = department;
   staff.designation = designation;
+  staff.shift =
+    data.shift !== undefined ? normalizeShift(data.shift) || undefined : staff.shift;
+  staff.employmentType =
+    data.employmentType !== undefined
+      ? normalizeEmploymentType(data.employmentType)
+      : normalizeEmploymentType(staff.employmentType);
+  staff.status =
+    data.status !== undefined
+      ? normalizeStaffStatus(data.status, staff.status || "Active")
+      : normalizeStaffStatus(staff.status, "Active");
   staff.salary = salary;
 
   await staff.save();
@@ -549,6 +620,7 @@ exports.updateStaff = async (staffId, data, user) => {
             .map((permission) => permission.key || permission.name)
             .filter(Boolean)
         : [];
+      linkedUser.isActive = staff.status !== "Suspended";
 
       await linkedUser.save();
     }
