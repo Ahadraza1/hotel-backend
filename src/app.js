@@ -18,19 +18,11 @@ const allowedOrigins = [
 // ✅ CORS should be BEFORE everything
 app.use(
   cors({
-    origin: function (origin, callback) {
-      if (!origin) return callback(null, true);
-
-      if (allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(null, true);
-      }
-    },
+    origin: allowedOrigins,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "x-branch-id"],
-  })
+  }),
 );
 
 // ✅ FIXED preflight handler (ONLY CHANGE)
@@ -46,7 +38,7 @@ app.use(express.json());
 app.use(
   helmet({
     crossOriginResourcePolicy: false,
-  })
+  }),
 );
 
 app.use(morgan("dev"));
