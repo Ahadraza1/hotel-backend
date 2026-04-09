@@ -32,6 +32,9 @@ const requirePermission = (user, permission) => {
 
 const VALID_BOOKING_SOURCES = ["Walk-in", "Pre-booking", "Online"];
 const VALID_PAYMENT_METHODS = ["CASH", "CARD", "UPI"];
+const VALID_MEAL_TYPES = ["INCLUDED", "NOT_INCLUDED"];
+const VALID_PAYMENT_MODES = ["POSTPAID", "PREPAID", "OTHER"];
+const VALID_INCLUDED_MEALS = ["BREAKFAST", "LUNCH", "DINNER"];
 
 const normalizeIdentityProof = (source = {}) => {
   const explicitIdentityProof = source.identityProof;
@@ -74,6 +77,26 @@ const normalizeGuests = (guests) =>
 
 const normalizeBookingSource = (bookingSource) =>
   VALID_BOOKING_SOURCES.includes(bookingSource) ? bookingSource : "Walk-in";
+
+const normalizeMealType = (mealType) =>
+  VALID_MEAL_TYPES.includes(mealType) ? mealType : "NOT_INCLUDED";
+
+const normalizePaymentMode = (paymentMode) =>
+  VALID_PAYMENT_MODES.includes(paymentMode) ? paymentMode : "POSTPAID";
+
+const normalizeIncludedMeals = (includedMeals, mealType = "NOT_INCLUDED") => {
+  if (mealType !== "INCLUDED") {
+    return [];
+  }
+
+  const values = Array.isArray(includedMeals)
+    ? includedMeals
+    : includedMeals
+      ? [includedMeals]
+      : [];
+
+  return [...new Set(values.filter((meal) => VALID_INCLUDED_MEALS.includes(meal)))];
+};
 
 const normalizeServiceInput = (service) => {
   const name = String(service?.name || "").trim();
@@ -235,6 +258,9 @@ const createOrSyncBookingInvoice = async ({ booking, user, session }) => {
     branchId: booking.branchId,
     bookingId: booking._id,
     guestName: booking.guestName || "",
+    mealType: booking.mealType || "NOT_INCLUDED",
+    includedMeals: Array.isArray(booking.includedMeals) ? booking.includedMeals : [],
+    paymentMode: booking.paymentMode || "POSTPAID",
     orderType: "ROOM_SERVICE",
     type: "ROOM",
     referenceType: "BOOKING",
@@ -348,6 +374,12 @@ const serializeBooking = async (booking) => {
           finalAmount: invoice.finalAmount,
           paidAmount: invoice.paidAmount,
           dueAmount: invoice.dueAmount,
+          mealType: invoice.mealType || populatedBooking.mealType || "NOT_INCLUDED",
+          includedMeals:
+            invoice.includedMeals?.length
+              ? invoice.includedMeals
+              : populatedBooking.includedMeals || [],
+          paymentMode: invoice.paymentMode || populatedBooking.paymentMode || "POSTPAID",
           pdfUrl: `/api/invoices/${invoice.invoiceId}/pdf`,
         }
       : null,
@@ -364,6 +396,14 @@ const serializeBooking = async (booking) => {
       taxPercentage,
       paymentStatus: populatedBooking.paymentStatus,
       paymentMethod: populatedBooking.paymentMethod || null,
+      mealType:
+        invoice?.mealType || populatedBooking.mealType || "NOT_INCLUDED",
+      includedMeals:
+        invoice?.includedMeals?.length
+          ? invoice.includedMeals
+          : populatedBooking.includedMeals || [],
+      paymentMode:
+        invoice?.paymentMode || populatedBooking.paymentMode || "POSTPAID",
       paymentDate: populatedBooking.paymentDate || null,
     },
   };
@@ -401,6 +441,9 @@ exports.createBooking = async (data, user) => {
       guestName,
       guestType,
       bookingSource,
+      mealType,
+      includedMeals,
+      paymentMode,
       guestPhone,
       guestEmail,
       totalGuests,
@@ -447,6 +490,7 @@ exports.createBooking = async (data, user) => {
       (checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60 * 24);
     const roomCharges = nights * room.pricePerNight;
 
+    const normalizedMealType = normalizeMealType(mealType);
     const bookingArr = await Booking.create(
       [
         {
@@ -457,6 +501,9 @@ exports.createBooking = async (data, user) => {
           guestName,
           guestType,
           bookingSource: normalizeBookingSource(bookingSource),
+          mealType: normalizedMealType,
+          includedMeals: normalizeIncludedMeals(includedMeals, normalizedMealType),
+          paymentMode: normalizePaymentMode(paymentMode),
           guestPhone,
           guestEmail,
           totalGuests,
@@ -582,6 +629,9 @@ exports.updateBooking = async (bookingId, data, user) => {
       guestName,
       guestType,
       bookingSource,
+      mealType,
+      includedMeals,
+      paymentMode,
       guestPhone,
       guestEmail,
       totalGuests,
@@ -619,10 +669,26 @@ exports.updateBooking = async (bookingId, data, user) => {
       (checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60 * 24);
     const roomCharges = nights * room.pricePerNight;
 
+    const normalizedMealType = normalizeMealType(mealType);
     booking.roomId = room._id;
     booking.guestName = guestName;
     booking.guestType = guestType;
     booking.bookingSource = normalizeBookingSource(bookingSource);
+    booking.mealType =
+      mealType !== undefined
+        ? normalizedMealType
+        : booking.mealType || "NOT_INCLUDED";
+    booking.includedMeals =
+      includedMeals !== undefined || mealType !== undefined
+        ? normalizeIncludedMeals(
+            includedMeals !== undefined ? includedMeals : booking.includedMeals,
+            mealType !== undefined ? normalizedMealType : booking.mealType || "NOT_INCLUDED",
+          )
+        : booking.includedMeals || [];
+    booking.paymentMode =
+      paymentMode !== undefined
+        ? normalizePaymentMode(paymentMode)
+        : booking.paymentMode || "POSTPAID";
     booking.guestPhone = guestPhone;
     booking.guestEmail = guestEmail;
     booking.totalGuests = totalGuests;

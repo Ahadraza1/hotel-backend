@@ -60,6 +60,30 @@ const invoiceSchema = new mongoose.Schema(
       default: null,
     },
 
+    mealType: {
+      type: String,
+      enum: ["INCLUDED", "NOT_INCLUDED", null],
+      default: null,
+      index: true,
+    },
+
+    includedMeals: {
+      type: [
+        {
+          type: String,
+          enum: ["BREAKFAST", "LUNCH", "DINNER"],
+        },
+      ],
+      default: [],
+    },
+
+    paymentMode: {
+      type: String,
+      enum: ["POSTPAID", "PREPAID", "OTHER", null],
+      default: null,
+      index: true,
+    },
+
     orderType: {
       type: String,
       enum: ["DINE_IN", "ROOM_SERVICE", "TAKEAWAY", null],

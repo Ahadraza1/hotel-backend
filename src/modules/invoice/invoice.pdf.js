@@ -149,6 +149,48 @@ const drawRoomInvoice = (
   const checkOut = booking?.checkOutDate
     ? new Date(booking.checkOutDate).toLocaleDateString()
     : "N/A";
+  const mealType =
+    invoice.mealType === "INCLUDED"
+      ? "Included"
+      : invoice.mealType === "NOT_INCLUDED"
+        ? "Not Included"
+        : booking?.mealType === "INCLUDED"
+          ? "Included"
+          : booking?.mealType === "NOT_INCLUDED"
+            ? "Not Included"
+            : "N/A";
+  const paymentMode =
+    invoice.paymentMode === "POSTPAID"
+      ? "Postpaid"
+      : invoice.paymentMode === "PREPAID"
+        ? "Prepaid"
+        : invoice.paymentMode === "OTHER"
+          ? "Other"
+          : booking?.paymentMode === "POSTPAID"
+            ? "Postpaid"
+            : booking?.paymentMode === "PREPAID"
+              ? "Prepaid"
+              : booking?.paymentMode === "OTHER"
+                ? "Other"
+                : "N/A";
+  const includedMeals = Array.isArray(invoice.includedMeals) && invoice.includedMeals.length
+    ? invoice.includedMeals
+    : Array.isArray(booking?.includedMeals)
+      ? booking.includedMeals
+      : [];
+  const includedMealsLabel = includedMeals.length
+    ? includedMeals
+        .map((meal) =>
+          meal === "BREAKFAST"
+            ? "Breakfast"
+            : meal === "LUNCH"
+              ? "Lunch"
+              : meal === "DINNER"
+                ? "Dinner"
+                : meal,
+        )
+        .join(", ")
+    : "N/A";
 
   doc
     .fillColor(accentColor)
@@ -174,6 +216,15 @@ const drawRoomInvoice = (
   currentY += 15;
   doc.font("Helvetica").text("Check-Out:", 40, currentY);
   doc.font("Helvetica-Bold").text(checkOut, 120, currentY);
+  currentY += 15;
+  doc.font("Helvetica").text("Meal Type:", 40, currentY);
+  doc.font("Helvetica-Bold").text(mealType, 120, currentY);
+  currentY += 15;
+  doc.font("Helvetica").text("Included Meals:", 40, currentY);
+  doc.font("Helvetica-Bold").text(includedMealsLabel, 120, currentY, { width: 320 });
+  currentY += 15;
+  doc.font("Helvetica").text("Payment Mode:", 40, currentY);
+  doc.font("Helvetica-Bold").text(paymentMode, 120, currentY);
 
   currentY += 50;
   doc.rect(40, currentY, 515, 30).fill(primaryColor);

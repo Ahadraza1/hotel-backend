@@ -52,6 +52,30 @@ const bookingSchema = new mongoose.Schema(
       trim: true,
     },
 
+    mealType: {
+      type: String,
+      enum: ["INCLUDED", "NOT_INCLUDED"],
+      default: "NOT_INCLUDED",
+      trim: true,
+    },
+
+    includedMeals: {
+      type: [
+        {
+          type: String,
+          enum: ["BREAKFAST", "LUNCH", "DINNER"],
+        },
+      ],
+      default: [],
+    },
+
+    paymentMode: {
+      type: String,
+      enum: ["POSTPAID", "PREPAID", "OTHER"],
+      default: "POSTPAID",
+      trim: true,
+    },
+
     // Additional guests staying
     guests: [
       {

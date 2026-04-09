@@ -64,6 +64,27 @@ const parseGuestsFromBody = (body) => {
     .map(([, guest]) => guest);
 };
 
+const normalizeIncludedMealsFromBody = (body) => {
+  if (Array.isArray(body.includedMeals)) {
+    return body.includedMeals;
+  }
+
+  const includedMeals = [];
+
+  Object.entries(body).forEach(([key, value]) => {
+    if (key === "includedMeals[]" || key === "includedMeals") {
+      if (Array.isArray(value)) {
+        includedMeals.push(...value);
+      } else if (value) {
+        includedMeals.push(value);
+      }
+      delete body[key];
+    }
+  });
+
+  return includedMeals;
+};
+
 const hydrateBookingBody = (req) => {
   const identityFile =
     req.files?.identityProof?.[0] ||
@@ -91,6 +112,7 @@ const hydrateBookingBody = (req) => {
   }
 
   req.body.guests = parseGuestsFromBody(req.body);
+  req.body.includedMeals = normalizeIncludedMealsFromBody(req.body);
 };
 
 /*

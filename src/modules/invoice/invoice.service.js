@@ -109,7 +109,7 @@ exports.getInvoices = async (user, filters = {}) => {
   const [bookings, posOrders, posSessions] = await Promise.all([
     bookingObjectIds.length
       ? Booking.find({ _id: { $in: bookingObjectIds } })
-          .select("_id guestName guestPhone")
+          .select("_id guestName guestPhone mealType includedMeals paymentMode")
           .lean()
       : [],
     posReferenceIds.length
@@ -144,6 +144,9 @@ exports.getInvoices = async (user, filters = {}) => {
         invoice.guestName ||
         posSession?.guestName ||
         deriveGuestName({ invoice, booking, posOrder }),
+      mealType: invoice.mealType || booking?.mealType || null,
+      includedMeals: invoice.includedMeals?.length ? invoice.includedMeals : booking?.includedMeals || [],
+      paymentMode: invoice.paymentMode || booking?.paymentMode || null,
       orderType: invoice.orderType || posSession?.type || deriveOrderType({ invoice, posOrder }),
       tableNo: invoice.tableNo || posSession?.tableNo || posOrder?.tableNumber || null,
       roomNo: invoice.roomNo || posSession?.roomNo || posOrder?.roomNumber || null,
