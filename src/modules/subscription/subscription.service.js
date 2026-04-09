@@ -301,6 +301,8 @@ const serializeSubscription = async (organizationId, subscriptionDoc) => {
   if (!subscription) {
     return {
       hasSubscription: false,
+      planId: null,
+      planType: null,
       status: "expired",
       subscriptionStatus: "expired",
       billingCycle: null,
@@ -342,6 +344,8 @@ const serializeSubscription = async (organizationId, subscriptionDoc) => {
 
   return {
     hasSubscription: true,
+    planId: subscription.planId,
+    planType: subscription.billingCycle,
     status: subscription.subscriptionStatus,
     subscriptionStatus: subscription.subscriptionStatus,
     billingCycle: subscription.billingCycle,
