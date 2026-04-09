@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const Invitation = require("./invitation.model");
 const User = require("../user/user.model");
 const Role = require("../rbac/role.model");
+const Staff = require("../hr/staff.model");
 const { sendInvitationEmail } = require("../../utils/sendEmail");
 const InvitationAudit = require("./invitationAudit.model");
 const Organization = require("../organization/organization.model");
@@ -118,6 +119,26 @@ const normalizeStaffStatus = (status, fallback = "Invited") => {
   return statusMap[normalizedValue] || fallback;
 };
 
+const assertInvitationScope = (invitation, user, actionLabel) => {
+  if (
+    user.role === "CORPORATE_ADMIN" &&
+    invitation.organizationId?.toString() !== user.organizationId?.toString()
+  ) {
+    const error = new Error(`Not allowed to ${actionLabel} this invitation`);
+    error.statusCode = 403;
+    throw error;
+  }
+
+  if (
+    user.role === "BRANCH_MANAGER" &&
+    invitation.branchId?.toString() !== user.branchId?.toString()
+  ) {
+    const error = new Error(`Not allowed to ${actionLabel} this invitation`);
+    error.statusCode = 403;
+    throw error;
+  }
+};
+
 // Helper: Check role permission
 const canInviteRole = (inviterRole, targetRole) => {
   if (inviterRole === "SUPER_ADMIN") return true;
@@ -154,8 +175,6 @@ exports.createInvitation = async (req, res) => {
       joinedDate,
       status,
     } = req.body;
-    const Staff = require("../hr/staff.model");
-
     if (!name || !email || !role) {
       return res.status(400).json({ message: "All fields are required" });
     }
@@ -632,6 +651,7 @@ exports.acceptInvitation = async (req, res) => {
 exports.getPendingInvitations = async (req, res) => {
   try {
     const user = req.user;
+    const requestedBranchId = String(req.query.branchId || "").trim();
 
     let filter = { status: "pending" };
 
@@ -641,10 +661,17 @@ exports.getPendingInvitations = async (req, res) => {
 
     if (user.role === "CORPORATE_ADMIN") {
       filter.organizationId = user.organizationId;
+      if (requestedBranchId) {
+        filter.branchId = requestedBranchId;
+      }
     }
 
     if (user.role === "BRANCH_MANAGER") {
       filter.branchId = user.branchId;
+    }
+
+    if (user.role === "SUPER_ADMIN" && requestedBranchId) {
+      filter.branchId = requestedBranchId;
     }
 
     const invitations = await Invitation.find(filter)
@@ -655,6 +682,128 @@ exports.getPendingInvitations = async (req, res) => {
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: "Server Error" });
+  }
+};
+
+// ================= UPDATE INVITATION =================
+exports.updateInvitation = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      name,
+      email,
+      role,
+      salary,
+      phone,
+      department,
+      shift,
+      employmentType,
+      joinedDate,
+      status,
+    } = req.body;
+
+    if (!name || !email || !role) {
+      return res.status(400).json({
+        message: "Name, email and role are required",
+      });
+    }
+
+    const invitation = await Invitation.findById(id);
+
+    if (!invitation) {
+      return res.status(404).json({ message: "Invitation not found" });
+    }
+
+    if (invitation.status !== "pending") {
+      return res.status(400).json({
+        message: "Only pending invitations can be updated",
+      });
+    }
+
+    assertInvitationScope(invitation, req.user, "update");
+
+    if (!canInviteRole(req.user.role, role)) {
+      return res.status(403).json({
+        message: "You are not allowed to invite this role",
+      });
+    }
+
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const existingUser = await User.findOne({ email: normalizedEmail });
+    if (existingUser) {
+      return res.status(400).json({
+        message: "User with this email already exists",
+      });
+    }
+
+    const duplicateInvitation = await Invitation.findOne({
+      _id: { $ne: invitation._id },
+      email: normalizedEmail,
+      status: "pending",
+      branchId: invitation.branchId,
+    });
+
+    if (duplicateInvitation) {
+      return res.status(400).json({
+        message: "A pending invitation already exists for this email",
+      });
+    }
+
+    const previousEmail = invitation.email?.trim().toLowerCase();
+    const normalizedRole = normalizeInvitedRole(role);
+
+    invitation.name = String(name).trim();
+    invitation.email = normalizedEmail;
+    invitation.role = normalizedRole;
+    invitation.salary = Number.isFinite(Number(salary)) ? Number(salary) : 0;
+    invitation.phone = String(phone || "").trim();
+    invitation.department =
+      String(department || "").trim() || getDepartmentFromRole(normalizedRole);
+    invitation.shift = normalizeShift(shift) || undefined;
+    invitation.employmentType = normalizeEmploymentType(employmentType);
+    invitation.joinedDate = joinedDate || invitation.joinedDate || new Date();
+    invitation.staffStatus = normalizeStaffStatus(status, "Invited");
+
+    await invitation.save();
+
+    const nameParts = invitation.name.split(/\s+/);
+    const firstName = nameParts[0] || invitation.name;
+    const lastName = nameParts.slice(1).join(" ");
+    const placeholderStaff = await Staff.findOne({
+      branchId: invitation.branchId,
+      userId: null,
+      email: previousEmail,
+      isDeleted: { $ne: true },
+    });
+
+    if (placeholderStaff) {
+      placeholderStaff.firstName = firstName;
+      placeholderStaff.lastName = lastName;
+      placeholderStaff.email = normalizedEmail;
+      placeholderStaff.phone = invitation.phone || "";
+      placeholderStaff.department = invitation.department;
+      placeholderStaff.designation = normalizedRole;
+      placeholderStaff.shift = invitation.shift;
+      placeholderStaff.employmentType = invitation.employmentType;
+      placeholderStaff.status = invitation.staffStatus;
+      placeholderStaff.salary = invitation.salary;
+      placeholderStaff.joiningDate =
+        invitation.joinedDate || placeholderStaff.joiningDate;
+      placeholderStaff.isActive = true;
+      placeholderStaff.isDeleted = false;
+      placeholderStaff.deletedAt = null;
+      await placeholderStaff.save();
+    }
+
+    return res.status(200).json({
+      message: "Invitation updated successfully",
+      data: invitation,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(error.statusCode || 500).json({
+      message: error.message || "Server Error",
+    });
   }
 };
 // ================= RESEND INVITATION =================
@@ -828,14 +977,29 @@ exports.cancelInvitation = async (req, res) => {
       }
     }
 
-    invitation.status = "expired";
-    await invitation.save();
+    await Invitation.deleteOne({ _id: invitation._id });
+
+    const placeholderStaff = await Staff.findOne({
+      branchId: invitation.branchId,
+      userId: null,
+      email: invitation.email?.trim().toLowerCase(),
+      isDeleted: { $ne: true },
+    });
+
+    if (placeholderStaff) {
+      placeholderStaff.isActive = false;
+      placeholderStaff.isDeleted = true;
+      placeholderStaff.deletedAt = new Date();
+      await placeholderStaff.save();
+    }
 
     return res.status(200).json({
-      message: "Invitation cancelled successfully",
+      message: "Invitation deleted successfully",
     });
   } catch (error) {
     console.error(error);
-    return res.status(500).json({ message: "Server Error" });
+    return res.status(error.statusCode || 500).json({
+      message: error.message || "Server Error",
+    });
   }
 };

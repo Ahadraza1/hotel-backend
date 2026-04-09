@@ -17,6 +17,7 @@ router.get(
   authMiddleware,
   invitationController.getPendingInvitations
 );
+router.patch("/:id", authMiddleware, invitationController.updateInvitation);
 router.post("/accept", invitationController.acceptInvitation);
 
 router.patch(
