@@ -29,6 +29,7 @@ const notificationRoutes = require("./modules/notification/notification.routes")
 const posRoutes = require("./modules/pos/pos.routes");
 const invitationRoutes = require("./modules/invitation/invitation.routes");
 const branchSettingsRoutes = require("./modules/branchSettings/branchSettings.routes");
+const serviceRoutes = require("./modules/service/service.routes");
 const subscriptionRoutes = require("./modules/subscription/subscription.routes");
 const subscriptionController = require("./modules/subscription/subscription.controller");
 const contactRoutes = require("./modules/contact/contact.routes");
@@ -43,6 +44,7 @@ router.use("/auth", authRoutes);
 router.use("/organizations", organizationRoutes);
 router.use("/branches", branchRoutes);
 router.use("/branch-settings", branchSettingsRoutes);
+router.use("/services", serviceRoutes);
 router.use("/subscriptions", subscriptionRoutes);
 router.use("/users", userRoutes);
 router.use("/roles", roleRoutes);
