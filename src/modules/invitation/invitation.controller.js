@@ -2,7 +2,6 @@ const crypto = require("crypto");
 const Invitation = require("./invitation.model");
 const User = require("../user/user.model");
 const Role = require("../rbac/role.model");
-const Staff = require("../hr/staff.model");
 const { sendInvitationEmail } = require("../../utils/sendEmail");
 const InvitationAudit = require("./invitationAudit.model");
 const Organization = require("../organization/organization.model");
@@ -118,6 +117,10 @@ const normalizeStaffStatus = (status, fallback = "Invited") => {
 
   return statusMap[normalizedValue] || fallback;
 };
+
+const isInvitationPending = (invitation) =>
+  ["pending", "PENDING"].includes(String(invitation?.status || "").trim()) &&
+  invitation?.isAccepted !== true;
 
 const assertInvitationScope = (invitation, user, actionLabel) => {
   if (
@@ -278,6 +281,8 @@ exports.createInvitation = async (req, res) => {
       branchId,
       invitedBy: inviter._id,
       token,
+      status: "PENDING",
+      isAccepted: false,
       expiresAt,
     });
 
@@ -293,61 +298,6 @@ exports.createInvitation = async (req, res) => {
     if (branchId) {
       branch = await Branch.findById(branchId);
       // branch = await Branch.findById(branchId);
-    }
-
-    if (branchId) {
-      const normalizedEmail = email.trim().toLowerCase();
-      const normalizedRole = normalizeInvitedRole(role);
-      const nameParts = name.trim().split(/\s+/);
-      const firstName = nameParts[0] || name;
-      const lastName = nameParts.slice(1).join(" ");
-      const salaryValue = Number.isFinite(Number(salary)) ? Number(salary) : 0;
-
-      const existingStaff = await Staff.findOne({
-        email: normalizedEmail,
-        branchId: branchId.toString(),
-      });
-
-      if (!existingStaff) {
-        await Staff.create({
-          organizationId: organizationId?.toString(),
-          branchId: branchId.toString(),
-          userId: null,
-          firstName,
-          lastName,
-          email: normalizedEmail,
-          phone: phone?.trim() || "",
-          department: department?.trim() || getDepartmentFromRole(role),
-          designation: normalizedRole,
-          shift: normalizeShift(shift) || undefined,
-          employmentType: normalizeEmploymentType(employmentType),
-          status: normalizeStaffStatus(status, "Invited"),
-          salary: salaryValue,
-          joiningDate: joinedDate || new Date(),
-          createdBy: inviter._id,
-          isDeleted: false,
-        });
-      } else {
-        existingStaff.organizationId = organizationId?.toString();
-        existingStaff.branchId = branchId.toString();
-        existingStaff.userId = existingStaff.userId || null;
-        existingStaff.firstName = firstName;
-        existingStaff.lastName = lastName;
-        existingStaff.phone = phone?.trim() || existingStaff.phone;
-        existingStaff.department = department?.trim() || getDepartmentFromRole(role);
-        existingStaff.designation = normalizedRole;
-        existingStaff.shift = normalizeShift(shift) || existingStaff.shift;
-        existingStaff.employmentType = normalizeEmploymentType(employmentType);
-        existingStaff.status = normalizeStaffStatus(status, "Invited");
-        existingStaff.salary = salaryValue;
-        existingStaff.isActive = true;
-        existingStaff.isDeleted = false;
-        existingStaff.deletedAt = null;
-        if (!existingStaff.joiningDate) {
-          existingStaff.joiningDate = joinedDate || new Date();
-        }
-        await existingStaff.save();
-      }
     }
 
     // 7️⃣ Send Email
@@ -519,14 +469,15 @@ exports.acceptInvitation = async (req, res) => {
       });
     }
 
-    if (invitation.status === "accepted") {
+    if (invitation.isAccepted || ["accepted", "ACCEPTED"].includes(invitation.status)) {
       return res.status(400).json({
         message: "Invitation already accepted",
       });
     }
 
     if (invitation.expiresAt < new Date()) {
-      invitation.status = "expired";
+      invitation.status = "EXPIRED";
+      invitation.isAccepted = false;
       await invitation.save();
 
       return res.status(400).json({
@@ -633,7 +584,8 @@ exports.acceptInvitation = async (req, res) => {
       await existingStaff.save();
     }
 
-    invitation.status = "accepted";
+    invitation.status = "ACCEPTED";
+    invitation.isAccepted = true;
     await invitation.save();
 
     return res.status(201).json({
@@ -653,7 +605,10 @@ exports.getPendingInvitations = async (req, res) => {
     const user = req.user;
     const requestedBranchId = String(req.query.branchId || "").trim();
 
-    let filter = { status: "pending" };
+    let filter = {
+      status: { $in: ["pending", "PENDING"] },
+      $or: [{ isAccepted: false }, { isAccepted: { $exists: false } }],
+    };
 
     if (user.role === "SUPER_ADMIN") {
       // no extra filter
@@ -714,7 +669,7 @@ exports.updateInvitation = async (req, res) => {
       return res.status(404).json({ message: "Invitation not found" });
     }
 
-    if (invitation.status !== "pending") {
+    if (!isInvitationPending(invitation)) {
       return res.status(400).json({
         message: "Only pending invitations can be updated",
       });
@@ -739,7 +694,8 @@ exports.updateInvitation = async (req, res) => {
     const duplicateInvitation = await Invitation.findOne({
       _id: { $ne: invitation._id },
       email: normalizedEmail,
-      status: "pending",
+      status: { $in: ["pending", "PENDING"] },
+      $or: [{ isAccepted: false }, { isAccepted: { $exists: false } }],
       branchId: invitation.branchId,
     });
 
@@ -749,7 +705,6 @@ exports.updateInvitation = async (req, res) => {
       });
     }
 
-    const previousEmail = invitation.email?.trim().toLowerCase();
     const normalizedRole = normalizeInvitedRole(role);
 
     invitation.name = String(name).trim();
@@ -763,37 +718,10 @@ exports.updateInvitation = async (req, res) => {
     invitation.employmentType = normalizeEmploymentType(employmentType);
     invitation.joinedDate = joinedDate || invitation.joinedDate || new Date();
     invitation.staffStatus = normalizeStaffStatus(status, "Invited");
+    invitation.status = "PENDING";
+    invitation.isAccepted = false;
 
     await invitation.save();
-
-    const nameParts = invitation.name.split(/\s+/);
-    const firstName = nameParts[0] || invitation.name;
-    const lastName = nameParts.slice(1).join(" ");
-    const placeholderStaff = await Staff.findOne({
-      branchId: invitation.branchId,
-      userId: null,
-      email: previousEmail,
-      isDeleted: { $ne: true },
-    });
-
-    if (placeholderStaff) {
-      placeholderStaff.firstName = firstName;
-      placeholderStaff.lastName = lastName;
-      placeholderStaff.email = normalizedEmail;
-      placeholderStaff.phone = invitation.phone || "";
-      placeholderStaff.department = invitation.department;
-      placeholderStaff.designation = normalizedRole;
-      placeholderStaff.shift = invitation.shift;
-      placeholderStaff.employmentType = invitation.employmentType;
-      placeholderStaff.status = invitation.staffStatus;
-      placeholderStaff.salary = invitation.salary;
-      placeholderStaff.joiningDate =
-        invitation.joinedDate || placeholderStaff.joiningDate;
-      placeholderStaff.isActive = true;
-      placeholderStaff.isDeleted = false;
-      placeholderStaff.deletedAt = null;
-      await placeholderStaff.save();
-    }
 
     return res.status(200).json({
       message: "Invitation updated successfully",
@@ -820,7 +748,7 @@ exports.resendInvitation = async (req, res) => {
       });
     }
 
-    if (invitation.status !== "pending") {
+    if (!isInvitationPending(invitation)) {
       return res.status(400).json({
         message: "Only pending invitations can be resent",
       });
@@ -949,7 +877,7 @@ exports.cancelInvitation = async (req, res) => {
       });
     }
 
-    if (invitation.status !== "pending") {
+    if (!isInvitationPending(invitation)) {
       return res.status(400).json({
         message: "Only pending invitations can be cancelled",
       });
@@ -978,20 +906,6 @@ exports.cancelInvitation = async (req, res) => {
     }
 
     await Invitation.deleteOne({ _id: invitation._id });
-
-    const placeholderStaff = await Staff.findOne({
-      branchId: invitation.branchId,
-      userId: null,
-      email: invitation.email?.trim().toLowerCase(),
-      isDeleted: { $ne: true },
-    });
-
-    if (placeholderStaff) {
-      placeholderStaff.isActive = false;
-      placeholderStaff.isDeleted = true;
-      placeholderStaff.deletedAt = new Date();
-      await placeholderStaff.save();
-    }
 
     return res.status(200).json({
       message: "Invitation deleted successfully",

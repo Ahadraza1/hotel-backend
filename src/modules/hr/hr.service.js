@@ -1,7 +1,6 @@
 const Staff = require("./staff.model");
 const Attendance = require("./attendance.model");
 const Payroll = require("./payroll.model");
-const Invitation = require("../invitation/invitation.model");
 const mongoose = require("mongoose");
 const User = require("../user/user.model");
 const Role = require("../rbac/role.model");
@@ -385,11 +384,6 @@ exports.getStaff = async (user, branchId) => {
     "staffId firstName lastName department designation salary email phone shift employmentType status branchId organizationId createdBy userId",
   );
 
-  const invitations = await Invitation.find({
-    branchId: branchFilter,
-    status: "pending",
-  }).select("_id email status");
-
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
@@ -409,7 +403,6 @@ exports.getStaff = async (user, branchId) => {
   const staffByEmailMap = new Map();
   const staffByCreatorMap = new Map();
   const staffByNameMap = new Map();
-  const invitationByEmailMap = new Map();
   staff.forEach((s) => {
     if (s.email) {
       staffByEmailMap.set(s.email.trim().toLowerCase(), s);
@@ -428,11 +421,6 @@ exports.getStaff = async (user, branchId) => {
     }
   });
 
-  invitations.forEach((invitation) => {
-    if (invitation.email) {
-      invitationByEmailMap.set(invitation.email.trim().toLowerCase(), invitation);
-    }
-  });
 
   // 🔥 MERGE USER + STAFF
   const matchedStaffIds = new Set();
@@ -469,18 +457,14 @@ exports.getStaff = async (user, branchId) => {
       status:
         staffData?.status === "Suspended"
           ? "Suspended"
-          : invitationByEmailMap.has(u.email?.trim().toLowerCase())
-            ? "Invited"
-            : normalizeStaffStatus(staffData?.status, "Active"),
+          : normalizeStaffStatus(staffData?.status, "Active"),
 
       salary: staffData?.salary ?? 0,
       attendanceStatus:
         attendanceStatusMap.get(staffData?.staffId || u._id.toString()) || "—",
 
       email: u.email,
-      invitationId:
-        invitationByEmailMap.get(u.email?.trim().toLowerCase())?._id?.toString() ||
-        null,
+      invitationId: null,
     };
     })
     .filter((row) => row.staffId && matchedStaffIds.size >= 0)
@@ -508,16 +492,13 @@ exports.getStaff = async (user, branchId) => {
       status:
         staffMember.status === "Suspended"
           ? "Suspended"
-          : invitationByEmailMap.has(staffMember.email?.trim().toLowerCase())
-            ? "Invited"
-            : normalizeStaffStatus(staffMember.status, "Active"),
+          : normalizeStaffStatus(staffMember.status, "Active"),
       salary: staffMember.salary ?? 0,
       attendanceStatus: attendanceStatusMap.get(staffMember.staffId) || "—",
       email: staffMember.email,
-      invitationId:
-        invitationByEmailMap.get(staffMember.email?.trim().toLowerCase())?._id?.toString() ||
-        null,
-    }));
+      invitationId: null,
+    }))
+    .filter((staffMember) => staffMember.status !== "Invited");
 
   return [...userRows, ...standaloneStaffRows];
 };

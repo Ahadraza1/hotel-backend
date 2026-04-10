@@ -1080,14 +1080,27 @@ exports.acceptInvite = async (req, res) => {
       });
     }
 
-    const invite = await Invitation.findOne({
-      token,
-      expiresAt: { $gt: new Date() },
-    });
+    const invite = await Invitation.findOne({ token });
 
     if (!invite) {
       return res.status(400).json({
-        message: "Invalid or expired invite token",
+        message: "Invalid invite token",
+      });
+    }
+
+    if (invite.isAccepted || ["accepted", "ACCEPTED"].includes(invite.status)) {
+      return res.status(400).json({
+        message: "Invitation already accepted",
+      });
+    }
+
+    if (invite.expiresAt <= new Date()) {
+      invite.status = "EXPIRED";
+      invite.isAccepted = false;
+      await invite.save();
+
+      return res.status(400).json({
+        message: "Invitation expired",
       });
     }
 
@@ -1162,15 +1175,38 @@ exports.acceptInvite = async (req, res) => {
         firstName,
         lastName,
         email: invite.email,
-        department: getDepartmentFromRole(normalizedRole),
+        phone: invite.phone || "",
+        department: invite.department || getDepartmentFromRole(normalizedRole),
         designation: normalizedRole,
+        shift: normalizeShift(invite.shift) || undefined,
+        employmentType: normalizeEmploymentType(invite.employmentType),
+        status: "Active",
         salary: invite.salary || 0,
-        joiningDate: new Date(),
+        joiningDate: invite.joinedDate || new Date(),
         createdBy: user._id,
         isDeleted: false,
       });
     } else {
+      const nameParts = invite.name.trim().split(/\s+/);
+      existingStaff.firstName = nameParts[0] || existingStaff.firstName;
+      existingStaff.lastName =
+        nameParts.slice(1).join(" ") || existingStaff.lastName;
+      existingStaff.email = invite.email || existingStaff.email;
       existingStaff.userId = user._id;
+      existingStaff.organizationId = invite.organizationId || existingStaff.organizationId;
+      existingStaff.branchId = invite.branchId || existingStaff.branchId;
+      existingStaff.phone = invite.phone || existingStaff.phone;
+      existingStaff.department =
+        invite.department || getDepartmentFromRole(normalizedRole);
+      existingStaff.designation = normalizedRole;
+      existingStaff.shift = normalizeShift(invite.shift) || existingStaff.shift;
+      existingStaff.employmentType = normalizeEmploymentType(
+        invite.employmentType,
+      );
+      existingStaff.salary = Number.isFinite(Number(invite.salary))
+        ? Number(invite.salary)
+        : existingStaff.salary;
+      existingStaff.status = "Active";
       existingStaff.isActive = true;
       existingStaff.isDeleted = false;
       existingStaff.deletedAt = null;
@@ -1178,7 +1214,9 @@ exports.acceptInvite = async (req, res) => {
       await existingStaff.save();
     }
 
-    await Invitation.deleteOne({ _id: invite._id });
+    invite.status = "ACCEPTED";
+    invite.isAccepted = true;
+    await invite.save();
 
     res.status(200).json({
       message: "Account activated successfully",
