@@ -7,6 +7,19 @@ const normalizeValue = (value) =>
   typeof value === "string" ? value.trim() : "";
 
 const normalizeEmail = (value) => normalizeValue(value).toLowerCase();
+const normalizeDocumentPath = (value) => {
+  const rawValue = normalizeValue(value);
+
+  if (!rawValue) {
+    return "";
+  }
+
+  return decodeURIComponent(rawValue)
+    .replace(/^https?:\/\/[^/]+/i, "")
+    .replace(/^\/+/, "")
+    .replace(/^uploads\/+/i, "")
+    .replace(/\\/g, "/");
+};
 
 const splitGuestName = (name = "") => {
   const cleanName = normalizeValue(name);
@@ -50,9 +63,11 @@ const findGuestByUniqueContact = async (branchId, { email, phone }, excludeGuest
 };
 
 const getPrimaryGuestDocument = (booking) =>
-  booking.identityProof?.url ||
-  booking.identityDocument?.url ||
-  booking.mainGuestIdentity ||
+  normalizeDocumentPath(
+    booking.identityProof?.url ||
+      booking.identityDocument?.url ||
+      booking.mainGuestIdentity,
+  ) ||
   null;
 
 const getBookingGuests = (booking = {}) => {
@@ -70,7 +85,9 @@ const getBookingGuests = (booking = {}) => {
         email: guest?.email,
         phone: guest?.phone,
         role: "ACCOMPANYING",
-        documents: uniqueValues(booking.guestsIdentity?.[index] || null),
+        documents: uniqueValues(
+          normalizeDocumentPath(booking.guestsIdentity?.[index] || null),
+        ),
       }))
     : [];
 
@@ -224,7 +241,7 @@ const upsertGuestFromBookingGuest = async (booking, bookingGuest, user) => {
   }
 
   guest.documents = uniqueValues(
-    ...guestDocuments,
+    ...guestDocuments.map(normalizeDocumentPath).filter(Boolean),
     ...(bookingGuest.documents || []),
   );
 
@@ -539,7 +556,9 @@ exports.getGuestProfile = async (guestId, user) => {
 
   const totalSpent = guest.totalSpent || 0;
   const loyaltyPoints = guest.loyaltyPoints || Math.floor(totalSpent / 100);
-  const documents = Array.from(new Set((guest.documents || []).filter(Boolean)));
+  const documents = Array.from(
+    new Set((guest.documents || []).map(normalizeDocumentPath).filter(Boolean)),
+  );
 
   return {
     guest: {

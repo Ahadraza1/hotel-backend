@@ -48,10 +48,24 @@ const ACTIVE_BOOKING_STATUSES = [
 ];
 
 const normalizeIdentityProof = (source = {}) => {
+  const normalizeDocumentPath = (value) => {
+    const rawValue = String(value || "").trim();
+
+    if (!rawValue) {
+      return null;
+    }
+
+    return decodeURIComponent(rawValue)
+      .replace(/^https?:\/\/[^/]+/i, "")
+      .replace(/^\/+/, "")
+      .replace(/^uploads\/+/i, "")
+      .replace(/\\/g, "/");
+  };
+
   const explicitIdentityProof = source.identityProof;
   if (explicitIdentityProof && typeof explicitIdentityProof === "object") {
     return {
-      url: explicitIdentityProof.url || null,
+      url: normalizeDocumentPath(explicitIdentityProof.url),
       fileType: explicitIdentityProof.fileType || null,
       fileName: explicitIdentityProof.fileName || null,
     };
@@ -60,7 +74,7 @@ const normalizeIdentityProof = (source = {}) => {
   const legacyIdentityDocument = source.identityDocument;
   if (legacyIdentityDocument && typeof legacyIdentityDocument === "object") {
     return {
-      url: legacyIdentityDocument.url || null,
+      url: normalizeDocumentPath(legacyIdentityDocument.url),
       fileType: legacyIdentityDocument.fileType || null,
       fileName: legacyIdentityDocument.fileName || null,
     };
@@ -68,7 +82,7 @@ const normalizeIdentityProof = (source = {}) => {
 
   if (typeof source.mainGuestIdentity === "string" && source.mainGuestIdentity.trim()) {
     return {
-      url: source.mainGuestIdentity.trim(),
+      url: normalizeDocumentPath(source.mainGuestIdentity),
       fileType: null,
       fileName: null,
     };
@@ -85,6 +99,20 @@ const normalizeGuests = (guests) =>
         phone: guest?.phone || "",
       }))
     : [];
+
+const normalizeDocumentPath = (value) => {
+  const rawValue = String(value || "").trim();
+
+  if (!rawValue) {
+    return null;
+  }
+
+  return decodeURIComponent(rawValue)
+    .replace(/^https?:\/\/[^/]+/i, "")
+    .replace(/^\/+/, "")
+    .replace(/^uploads\/+/i, "")
+    .replace(/\\/g, "/");
+};
 
 const normalizeBookingSource = (bookingSource) =>
   VALID_BOOKING_SOURCES.includes(bookingSource) ? bookingSource : "Walk-in";
@@ -528,9 +556,15 @@ exports.createBooking = async (data, user) => {
           guestEmail,
           totalGuests,
           identityProof: normalizedIdentityProof,
-          identityDocument: identityDocument || null,
+          identityDocument: normalizedIdentityProof
+            ? {
+                ...normalizedIdentityProof,
+              }
+            : null,
           mainGuestIdentity: mainGuestIdentityUrl,
-          guestsIdentity: Array.isArray(guestsIdentity) ? guestsIdentity : [],
+          guestsIdentity: Array.isArray(guestsIdentity)
+            ? guestsIdentity.map(normalizeDocumentPath).filter(Boolean)
+            : [],
           guests: normalizeGuests(guests),
           checkInDate,
           checkInTime,
@@ -558,9 +592,15 @@ exports.createBooking = async (data, user) => {
 
     const bookingData = bookingArr[0].toObject();
     bookingData.identityProof = normalizedIdentityProof;
-    bookingData.identityDocument = identityDocument || null;
+    bookingData.identityDocument = normalizedIdentityProof
+      ? {
+          ...normalizedIdentityProof,
+        }
+      : null;
     bookingData.mainGuestIdentity = mainGuestIdentityUrl;
-    bookingData.guestsIdentity = guestsIdentity || [];
+    bookingData.guestsIdentity = Array.isArray(guestsIdentity)
+      ? guestsIdentity.map(normalizeDocumentPath).filter(Boolean)
+      : [];
 
     await guestService.syncGuestFromBooking(bookingData, user);
 
@@ -733,15 +773,21 @@ exports.updateBooking = async (bookingId, data, user) => {
     }
 
     if (identityDocument) {
-      booking.identityDocument = identityDocument;
+      booking.identityDocument = normalizedIdentityProof
+        ? {
+            ...normalizedIdentityProof,
+          }
+        : null;
     }
 
     if (mainGuestIdentityUrl) {
-      booking.mainGuestIdentity = mainGuestIdentityUrl;
+      booking.mainGuestIdentity = normalizeDocumentPath(mainGuestIdentityUrl);
     }
 
     if (guestsIdentity) {
-      booking.guestsIdentity = guestsIdentity;
+      booking.guestsIdentity = Array.isArray(guestsIdentity)
+        ? guestsIdentity.map(normalizeDocumentPath).filter(Boolean)
+        : [];
     }
 
     if (normalizeBookingStatus(booking.status) === BOOKING_STATUSES.CHECKED_IN || booking.invoiceId) {

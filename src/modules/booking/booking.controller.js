@@ -26,6 +26,22 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
+const normalizeStoredUploadPath = (value) => {
+  const rawValue = String(value || "").trim();
+
+  if (!rawValue) {
+    return null;
+  }
+
+  const decodedValue = decodeURIComponent(rawValue);
+
+  return decodedValue
+    .replace(/^https?:\/\/[^/]+/i, "")
+    .replace(/^\/+/, "")
+    .replace(/^uploads\/+/i, "")
+    .replace(/\\/g, "/");
+};
+
 /*
   Upload Middleware
 */
@@ -91,7 +107,9 @@ const hydrateBookingBody = (req) => {
     req.files?.identityDocument?.[0] || req.files?.mainGuestIdentity?.[0];
 
   if (identityFile) {
-    const relativePath = `/uploads/guest-identities/${identityFile.filename}`;
+    const relativePath = normalizeStoredUploadPath(
+      `guest-identities/${identityFile.filename}`,
+    );
     req.body.identityProof = {
       url: relativePath,
       fileName: identityFile.originalname,
@@ -107,7 +125,7 @@ const hydrateBookingBody = (req) => {
 
   if (req.files?.guestsIdentity) {
     req.body.guestsIdentity = req.files.guestsIdentity.map(
-      (f) => `/uploads/guest-identities/${f.filename}`,
+      (f) => normalizeStoredUploadPath(`guest-identities/${f.filename}`),
     );
   }
 
