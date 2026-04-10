@@ -133,6 +133,16 @@ router.get(
 );
 
 /*
+  GET /analytics/cancelled-booking-trend
+*/
+router.get(
+  "/cancelled-booking-trend",
+  requireAuth,
+  requirePermission("VIEW_ANALYTICS"),
+  analyticsController.getCancelledBookingTrend
+);
+
+/*
   ===========================
   BRANCH REVENUE CHARTS
   ===========================

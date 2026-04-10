@@ -138,11 +138,20 @@ const assertUpgradeOnlySelection = async ({
   organizationId,
   selectedPlan,
   allowCurrentPlan = false,
+  allowAnyPlanSelectionWhenInactive = false,
 }) => {
   const currentSubscription = await getOrganizationSubscriptionDoc(organizationId);
   const currentPlan = currentSubscription?.planSnapshot;
+  const currentStatus = currentSubscription?.subscriptionStatus;
 
   if (!currentPlan?.name) {
+    return;
+  }
+
+  if (
+    allowAnyPlanSelectionWhenInactive &&
+    ["cancelled", "expired"].includes(currentStatus)
+  ) {
     return;
   }
 
@@ -491,6 +500,7 @@ exports.assignPlanToOrganization = async ({
   assignedBy,
   payment = null,
   startDate = new Date(),
+  allowAnyPlanSelectionWhenInactive = false,
 }) => {
   const plan = await SubscriptionPlan.findById(planId);
 
@@ -513,6 +523,7 @@ exports.assignPlanToOrganization = async ({
   await assertUpgradeOnlySelection({
     organizationId,
     selectedPlan: plan,
+    allowAnyPlanSelectionWhenInactive,
   });
 
   const currentBranchCount = await getOrganizationBranchCount(organizationId);
@@ -780,6 +791,7 @@ exports.createRazorpayOrder = async (user, { planId, billingCycle }) => {
   await assertUpgradeOnlySelection({
     organizationId: user.organizationId,
     selectedPlan: plan,
+    allowAnyPlanSelectionWhenInactive: true,
   });
 
   const currentBranchCount = await getOrganizationBranchCount(
@@ -803,6 +815,7 @@ exports.createRazorpayOrder = async (user, { planId, billingCycle }) => {
         billingCycle,
         assignedBy: user._id,
         payment: { provider: "free" },
+        allowAnyPlanSelectionWhenInactive: true,
       }),
       plan: serializePlan(plan),
       billingCycle,
@@ -876,6 +889,7 @@ exports.verifyRazorpayPayment = async (
       paymentId: razorpay_payment_id,
       signature: razorpay_signature,
     },
+    allowAnyPlanSelectionWhenInactive: true,
   });
 };
 

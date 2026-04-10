@@ -1477,6 +1477,97 @@ exports.getRevPARTrend = async (user, view, year, month, mode = "branch") => {
 };
 
 /*
+  Cancel Booking Trend
+*/
+exports.getCancelledBookingTrend = async (user, view, year, month, mode = "branch") => {
+  if (user.role !== "SUPER_ADMIN" && user.role !== "CORPORATE_ADMIN") {
+    const error = new Error("Access denied");
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const scope = await getAnalyticsScope(user, mode);
+  const bucketMeta = getAnalyticsBuckets(view, year, month);
+  const analyticsTimeZone = await resolveAnalyticsTimeZone(
+    user,
+    scope.branches,
+    scope.activeOrganizationIds,
+  );
+
+  if (!scope.series.length) {
+    return {
+      series: [],
+      branches: [],
+      year: bucketMeta.year,
+      month: bucketMeta.month,
+      view: bucketMeta.view,
+      chartData: buildEmptyChartData(bucketMeta.buckets),
+    };
+  }
+
+  const todayFetchStart = new Date(Date.now() - 36 * 60 * 60 * 1000);
+  const cancelledBookings = await Booking.find({
+    isActive: true,
+    status: "CANCELLED",
+    organizationId: { $in: scope.activeOrganizationIds },
+    branchId: { $in: scope.branchIds },
+    updatedAt: {
+      $gte: bucketMeta.view === "today" ? todayFetchStart : bucketMeta.rangeStart,
+      $lt: bucketMeta.rangeEnd,
+    },
+  })
+    .select("branchId updatedAt")
+    .lean();
+
+  const cancellationMap = new Map();
+  const todayReferenceDate = new Date();
+
+  cancelledBookings.forEach((booking) => {
+    const branchId = booking.branchId?.toString?.() || booking.branchId;
+    let bucketKey = null;
+
+    if (bucketMeta.view === "today") {
+      if (!isSameLocalDate(booking.updatedAt, todayReferenceDate, analyticsTimeZone)) {
+        return;
+      }
+
+      bucketKey = bucketMeta.buckets.find(
+        (bucket) =>
+          bucket.start.getHours() ===
+          getTwoHourBucketStart(getLocalHour(booking.updatedAt, analyticsTimeZone)),
+      )?.key || null;
+    } else {
+      bucketKey = getBucketKeyForDate(booking.updatedAt, bucketMeta.buckets);
+    }
+
+    if (!branchId || !bucketKey) {
+      return;
+    }
+
+    const compositeKey = `${branchId}__${bucketKey}`;
+    cancellationMap.set(compositeKey, (cancellationMap.get(compositeKey) || 0) + 1);
+  });
+
+  const chartData = buildMetricChartData({
+    buckets: bucketMeta.buckets,
+    series: scope.series,
+    branches: scope.branches,
+    mode: scope.mode,
+    valueMap: cancellationMap,
+    metricType: "sum",
+  });
+
+  return {
+    series: scope.series,
+    branches: scope.series,
+    year: bucketMeta.year,
+    month: bucketMeta.month,
+    view: bucketMeta.view,
+    chartData,
+  };
+};
+
+/*
   ===========================
   ROOM REVENUE CHART
   ===========================

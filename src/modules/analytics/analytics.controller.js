@@ -185,6 +185,21 @@ exports.getRevPARTrend = asyncHandler(async (req, res) => {
 });
 
 /*
+  Cancel Booking Trend (Time Series)
+*/
+exports.getCancelledBookingTrend = asyncHandler(async (req, res) => {
+
+  const { view, year, month, mode } = req.query;
+
+  const data = await analyticsService.getCancelledBookingTrend(req.user, view, year, month, mode);
+
+  return res.status(200).json({
+    success: true,
+    data,
+  });
+});
+
+/*
   ===========================
   BRANCH REVENUE CHARTS
   ===========================

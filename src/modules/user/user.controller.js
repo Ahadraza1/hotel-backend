@@ -21,6 +21,26 @@ const ensureUserManagementAccess = (actor, targetUser) => {
   return false;
 };
 
+const getDepartmentFromRole = (role) => {
+  const normalizedRole = String(role || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "_");
+
+  const roleDepartmentMap = {
+    RECEPTIONIST: "FRONT_OFFICE",
+    HOUSEKEEPING: "HOUSEKEEPING",
+    ACCOUNTANT: "FINANCE",
+    HR_MANAGER: "HR",
+    RESTAURANT_MANAGER: "RESTAURANT",
+    WAITER: "RESTAURANT",
+    CHEF: "RESTAURANT",
+    BRANCH_MANAGER: "MANAGEMENT",
+  };
+
+  return roleDepartmentMap[normalizedRole] || "MANAGEMENT";
+};
+
 const softDeleteLinkedStaff = async (user) => {
   if (!user?._id) {
     return null;
@@ -448,6 +468,20 @@ exports.changeUserRole = async (req, res) => {
       .map(p => p.key || p.name);
 
     await targetUser.save();
+
+    await Staff.findOneAndUpdate(
+      {
+        userId: targetUser._id,
+        branchId: targetUser.branchId,
+        isDeleted: { $ne: true },
+      },
+      {
+        $set: {
+          designation: normalizedRoleName,
+          department: getDepartmentFromRole(normalizedRoleName),
+        },
+      },
+    );
 
     const updatedUser = await User.findById(targetUser._id)
       .select("-password")
