@@ -516,6 +516,7 @@ exports.inviteBranchManager = async (data, user) => {
     throw new Error("User already exists");
   }
 
+  const USER_INVITE_EXPIRY_MS = 10 * 60 * 1000;
   const inviteToken = crypto.randomBytes(32).toString("hex");
 
   await User.create({
@@ -529,7 +530,7 @@ exports.inviteBranchManager = async (data, user) => {
     password: "TEMP_PASSWORD",
     isActive: false,
     inviteToken,
-    inviteExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    inviteExpiresAt: new Date(Date.now() + USER_INVITE_EXPIRY_MS),
   });
 
   const baseUrl = process.env.FRONTEND_URL?.replace(/\/$/, "");

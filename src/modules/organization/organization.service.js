@@ -1,9 +1,28 @@
-const Organization = require("./organization.model");
-const User = require("../user/user.model");
 const crypto = require("crypto");
 const mongoose = require("mongoose");
+const { v4: uuidv4 } = require("uuid");
 
+const Organization = require("./organization.model");
+const User = require("../user/user.model");
+const SubscriptionPlan = require("../subscription/subscriptionPlan.model");
+const OrganizationSubscription = require("../subscription/organizationSubscription.model");
+const SubscriptionPayment = require("../subscription/subscriptionPayment.model");
+const subscriptionService = require("../subscription/subscription.service");
 const { sendCorporateAdminInvite } = require("../../utils/sendEmail");
+const USER_INVITE_EXPIRY_MS = 10 * 60 * 1000;
+
+const normalizePlanCode = (value) =>
+  (
+    {
+      FREE: "STARTER",
+      TRIAL: "STARTER",
+      BASIC: "STARTER",
+      STARTER: "STARTER",
+      PRO: "PROFESSIONAL",
+      PROFESSIONAL: "PROFESSIONAL",
+      ENTERPRISE: "ENTERPRISE",
+    }[String(value || "").trim().toUpperCase()] || "STARTER"
+  );
 
 /*
   Create Organization + Corporate Admin Invite Flow
@@ -21,9 +40,10 @@ exports.createOrganization = async (data, superAdminId) => {
       name,
       systemIdentifier,
       headquartersAddress,
-      serviceTier,
       currency,
       timezone,
+      planId,
+      billingCycle,
       corporateAdmin,
     } = data;
 
@@ -33,6 +53,8 @@ exports.createOrganization = async (data, superAdminId) => {
       !headquartersAddress ||
       !currency ||
       !timezone ||
+      !planId ||
+      !billingCycle ||
       !corporateAdmin ||
       !corporateAdmin.name ||
       !corporateAdmin.email
@@ -40,18 +62,23 @@ exports.createOrganization = async (data, superAdminId) => {
       throw new Error("All required fields must be provided");
     }
 
+    if (!["monthly", "yearly"].includes(String(billingCycle))) {
+      throw new Error("Billing cycle must be monthly or yearly");
+    }
+
     const existingOrg = await Organization.findOne({
       systemIdentifier: systemIdentifier.toUpperCase(),
-    });
+    }).session(session);
 
     if (existingOrg) {
       throw new Error("Organization already exists");
     }
 
-    /*
-      1️⃣ Create Organization
-    */
-    const { v4: uuidv4 } = require("uuid");
+    const plan = await SubscriptionPlan.findById(planId).session(session);
+
+    if (!plan || !plan.isActive) {
+      throw new Error("Selected subscription plan is invalid");
+    }
 
     const orgUUID = uuidv4();
 
@@ -60,7 +87,7 @@ exports.createOrganization = async (data, superAdminId) => {
       name,
       systemIdentifier: systemIdentifier.toUpperCase(),
       headquartersAddress,
-      serviceTier,
+      serviceTier: normalizePlanCode(plan.name),
       currency,
       timezone,
       createdBy: superAdminId,
@@ -68,14 +95,8 @@ exports.createOrganization = async (data, superAdminId) => {
 
     await organization.save({ session });
 
-    /*
-      2️⃣ Generate Invite Token
-    */
     const inviteToken = crypto.randomBytes(32).toString("hex");
 
-    /*
-      3️⃣ Create Corporate Admin (Inactive)
-    */
     await User.create(
       [
         {
@@ -89,11 +110,56 @@ exports.createOrganization = async (data, superAdminId) => {
           password: "TEMP_PASSWORD",
           isActive: false,
           inviteToken,
-          inviteExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+          inviteExpiresAt: new Date(Date.now() + USER_INVITE_EXPIRY_MS),
           createdBy: superAdminId,
         },
       ],
-      { session }
+      { session },
+    );
+
+    const now = new Date();
+    const isTrialPlan = subscriptionService.isFreePlan(plan, billingCycle);
+    const trialEndDate = isTrialPlan
+      ? subscriptionService.addTrialPeriod(now)
+      : null;
+    const subscriptionEndDate = isTrialPlan
+      ? null
+      : subscriptionService.addBillingCycle(now, billingCycle);
+
+    await OrganizationSubscription.create(
+      [
+        {
+          organizationId: organization.organizationId,
+          planId: plan._id,
+          billingCycle,
+          trialStartDate: isTrialPlan ? now : null,
+          trialEndDate,
+          subscriptionStartDate: isTrialPlan ? null : now,
+          subscriptionEndDate,
+          subscriptionStatus: isTrialPlan ? "trial" : "active",
+          paymentStatus: isTrialPlan ? "not_required" : "success",
+          planSnapshot: subscriptionService.buildPlanSnapshot(plan),
+          payment: { provider: isTrialPlan ? "free" : "manual" },
+          assignedBy: superAdminId,
+        },
+      ],
+      { session },
+    );
+
+    await SubscriptionPayment.create(
+      [
+        {
+          organizationId: organization.organizationId,
+          planId: plan._id,
+          billingCycle,
+          amount: subscriptionService.getPlanAmount(plan, billingCycle),
+          status: "success",
+          paymentDate: now,
+          provider: isTrialPlan ? "free" : "manual",
+          assignedBy: superAdminId,
+        },
+      ],
+      { session },
     );
 
     await session.commitTransaction();
@@ -102,34 +168,26 @@ exports.createOrganization = async (data, superAdminId) => {
     const baseUrl = process.env.FRONTEND_URL?.replace(/\/$/, "");
     const inviteLink = `${baseUrl}/accept-invite?token=${inviteToken}`;
 
-    console.log("=====================================");
-    console.log("📩 CORPORATE ADMIN INVITE TOKEN:");
-    console.log(inviteToken);
-    console.log("📩 CORPORATE ADMIN INVITE LINK:");
-    console.log(inviteLink);
-    console.log("=====================================");
-
-    /*
-      4️⃣ Send Invitation Email
-    */
     try {
       await sendCorporateAdminInvite(
         corporateAdmin.email,
         corporateAdmin.name,
         inviteLink,
-        organization.name
+        organization.name,
       );
-
-      console.log("📧 Corporate Admin invitation email sent");
     } catch (emailError) {
-      console.error("❌ Failed to send invite email:", emailError.message);
+      console.error("Failed to send invite email:", emailError.message);
     }
 
     return {
       organization,
+      subscription: {
+        planId: plan._id,
+        planName: plan.name,
+        billingCycle,
+      },
       message: "Organization created and Corporate Admin invited",
     };
-
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
@@ -152,7 +210,7 @@ exports.deactivateOrganization = async (organizationId) => {
   const organization = await Organization.findOneAndUpdate(
     { organizationId },
     { isActive: false },
-    { new: true }
+    { new: true },
   );
 
   if (!organization) {

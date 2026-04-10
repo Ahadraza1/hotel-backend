@@ -43,6 +43,7 @@ const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const passwordRegex = /^(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
 const SIGNUP_CHECKOUT_EXPIRY_MS = 2 * 60 * 60 * 1000;
 const PASSWORD_RESET_OTP_EXPIRY_MS = 5 * 60 * 1000;
+const USER_INVITE_EXPIRY_MS = 10 * 60 * 1000;
 
 const normalizeEmail = (value = "") =>
   String(value || "")
@@ -1080,17 +1081,76 @@ exports.acceptInvite = async (req, res) => {
       });
     }
 
+    if (!passwordRegex.test(String(password))) {
+      return res.status(400).json({
+        message:
+          "Password must be at least 8 characters and include an uppercase letter, number, and symbol",
+      });
+    }
+
+    const invitedUser = await User.findOne({
+      inviteToken: token,
+      isDeleted: { $ne: true },
+    }).select("+password");
+
+    if (invitedUser) {
+      if (invitedUser.isActive) {
+        return res.status(400).json({
+          message: "Token already used",
+        });
+      }
+
+      if (
+        !invitedUser.inviteExpiresAt ||
+        invitedUser.inviteExpiresAt.getTime() <= Date.now()
+      ) {
+        return res.status(400).json({
+          message: "Token expired",
+        });
+      }
+
+      const hashedPassword = await bcrypt.hash(String(password), 10);
+      const updateResult = await User.updateOne(
+        {
+          _id: invitedUser._id,
+          inviteToken: token,
+          isActive: false,
+          inviteExpiresAt: { $gt: new Date() },
+        },
+        {
+          $set: {
+            password: hashedPassword,
+            isActive: true,
+            inviteToken: null,
+            inviteExpiresAt: null,
+          },
+        },
+      );
+
+      if (updateResult.modifiedCount === 0) {
+        return res.status(400).json({
+          message: "Token already used",
+        });
+      }
+
+      return res.status(200).json({
+        message: "Account activated successfully",
+        redirect: "/login",
+        email: invitedUser.email,
+      });
+    }
+
     const invite = await Invitation.findOne({ token });
 
     if (!invite) {
       return res.status(400).json({
-        message: "Invalid invite token",
+        message: "Invalid token",
       });
     }
 
     if (invite.isAccepted || ["accepted", "ACCEPTED"].includes(invite.status)) {
       return res.status(400).json({
-        message: "Invitation already accepted",
+        message: "Token already used",
       });
     }
 
@@ -1100,7 +1160,7 @@ exports.acceptInvite = async (req, res) => {
       await invite.save();
 
       return res.status(400).json({
-        message: "Invitation expired",
+        message: "Token expired",
       });
     }
 
