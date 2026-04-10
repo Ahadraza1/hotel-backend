@@ -100,7 +100,7 @@ const guestSchema = new mongoose.Schema(
 
     currentStatus: {
       type: String,
-      enum: ["CHECKED_IN", "CHECKED_OUT", "CONFIRMED"],
+      enum: ["BOOKED", "CONFIRMED", "CHECKED_IN", "COMPLETED", "CHECKED_OUT"],
     },
 
     documents: [

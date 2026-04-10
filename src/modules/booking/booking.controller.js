@@ -223,6 +223,38 @@ exports.updateBookingStatus = asyncHandler(async (req, res) => {
   });
 });
 
+exports.checkInBooking = asyncHandler(async (req, res) => {
+  const bookingId = req.params.bookingId || req.body.bookingId;
+
+  if (!bookingId) {
+    throw new AppError("Booking ID is required", 400);
+  }
+
+  const updatedBooking = await bookingService.checkInBooking(bookingId, req.user);
+
+  return res.status(200).json({
+    success: true,
+    message: "Booking checked in successfully",
+    data: updatedBooking,
+  });
+});
+
+exports.checkOutBooking = asyncHandler(async (req, res) => {
+  const bookingId = req.params.bookingId || req.body.bookingId;
+
+  if (!bookingId) {
+    throw new AppError("Booking ID is required", 400);
+  }
+
+  const updatedBooking = await bookingService.checkOutBooking(bookingId, req.user);
+
+  return res.status(200).json({
+    success: true,
+    message: "Booking checked out successfully",
+    data: updatedBooking,
+  });
+});
+
 exports.addBookingService = asyncHandler(async (req, res) => {
   const { bookingId } = req.params;
 

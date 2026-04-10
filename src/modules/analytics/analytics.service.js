@@ -656,7 +656,7 @@ exports.getBranchDashboard = async (user, branchId) => {
   */
   const activeBookings = await Booking.countDocuments({
     branchId: branchObjectId,
-    status: { $in: ["CONFIRMED", "CHECKED_IN"] },
+    status: { $in: ["BOOKED", "CONFIRMED", "CHECKED_IN"] },
   });
 
   const todayCheckIns = await Booking.countDocuments({

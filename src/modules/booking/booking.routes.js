@@ -65,6 +65,38 @@ router.patch(
 );
 
 router.post(
+  "/check-in",
+  requireAuth,
+  requirePermission("UPDATE_BOOKING"),
+  auditMiddleware("BOOKING_CHECKED_IN", "BOOKING", "Checked in booking"),
+  bookingController.checkInBooking
+);
+
+router.post(
+  "/check-out",
+  requireAuth,
+  requirePermission("UPDATE_BOOKING"),
+  auditMiddleware("BOOKING_CHECKED_OUT", "BOOKING", "Checked out booking"),
+  bookingController.checkOutBooking
+);
+
+router.post(
+  "/:bookingId/check-in",
+  requireAuth,
+  requirePermission("UPDATE_BOOKING"),
+  auditMiddleware("BOOKING_CHECKED_IN", "BOOKING", "Checked in booking"),
+  bookingController.checkInBooking
+);
+
+router.post(
+  "/:bookingId/check-out",
+  requireAuth,
+  requirePermission("UPDATE_BOOKING"),
+  auditMiddleware("BOOKING_CHECKED_OUT", "BOOKING", "Checked out booking"),
+  bookingController.checkOutBooking
+);
+
+router.post(
   "/:bookingId/services",
   requireAuth,
   requirePermission("UPDATE_BOOKING"),

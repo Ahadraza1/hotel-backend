@@ -97,9 +97,21 @@ const roomSchema = new mongoose.Schema(
     // Operational Status
     status: {
       type: String,
-      enum: ["AVAILABLE", "OCCUPIED", "MAINTENANCE", "BLOCKED"],
+      enum: ["AVAILABLE", "BOOKED", "OCCUPIED", "MAINTENANCE", "BLOCKED"],
       default: "AVAILABLE",
       index: true,
+    },
+
+    manualOverrideActive: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+
+    manualOverrideStatus: {
+      type: String,
+      enum: ["AVAILABLE", "MAINTENANCE", "BLOCKED", null],
+      default: null,
     },
 
     housekeepingStatus: {

@@ -8,6 +8,12 @@ const notificationService = require("../notification/notification.service");
 const mongoose = require("mongoose");
 const { v4: uuidv4 } = require("uuid");
 const { ensureActiveBranch } = require("../../utils/workspaceScope");
+const {
+  ROOM_STATUSES,
+  BOOKING_STATUSES,
+  normalizeBookingStatus,
+  syncRoomStatusByRoomId,
+} = require("../room/roomStatus.util");
 
 /*
   Permission Helper
@@ -35,6 +41,11 @@ const VALID_PAYMENT_METHODS = ["CASH", "CARD", "UPI"];
 const VALID_MEAL_TYPES = ["INCLUDED", "NOT_INCLUDED"];
 const VALID_PAYMENT_MODES = ["POSTPAID", "PREPAID", "OTHER"];
 const VALID_INCLUDED_MEALS = ["BREAKFAST", "LUNCH", "DINNER"];
+const ACTIVE_BOOKING_STATUSES = [
+  BOOKING_STATUSES.BOOKED,
+  BOOKING_STATUSES.CONFIRMED,
+  BOOKING_STATUSES.CHECKED_IN,
+];
 
 const normalizeIdentityProof = (source = {}) => {
   const explicitIdentityProof = source.identityProof;
@@ -186,6 +197,15 @@ const ensureBookingRoomAvailability = async ({
     throw new Error("Room not found or inactive");
   }
 
+  if (
+    room.manualOverrideActive &&
+    [ROOM_STATUSES.MAINTENANCE, ROOM_STATUSES.BLOCKED].includes(
+      room.manualOverrideStatus,
+    )
+  ) {
+    throw new Error(`Room is currently ${room.manualOverrideStatus.toLowerCase()}`);
+  }
+
   if (room.branchId.toString() !== user.branchId) {
     throw new Error("Room does not belong to active branch");
   }
@@ -199,7 +219,7 @@ const ensureBookingRoomAvailability = async ({
 
   const overlapQuery = {
     roomId: room._id,
-    status: { $ne: "CANCELLED" },
+    status: { $in: ACTIVE_BOOKING_STATUSES },
     checkInDate: { $lt: checkOut },
     checkOutDate: { $gt: checkIn },
   };
@@ -521,12 +541,17 @@ exports.createBooking = async (data, user) => {
           totalAmount: roomCharges,
           paidAmount: 0,
           paymentStatus: "PENDING",
-          status: "CONFIRMED",
+          status: BOOKING_STATUSES.BOOKED,
           createdBy: user.id || user.userId,
         },
       ],
       { session },
     );
+
+    await syncRoomStatusByRoomId({
+      roomId: room._id,
+      session,
+    });
 
     await session.commitTransaction();
     session.endSession();
@@ -620,7 +645,9 @@ exports.updateBooking = async (bookingId, data, user) => {
 
     const booking = await getScopedBooking(bookingId, user, session);
 
-    if (booking.status === "CHECKED_OUT") {
+    const normalizedCurrentStatus = normalizeBookingStatus(booking.status);
+
+    if (normalizedCurrentStatus === BOOKING_STATUSES.COMPLETED) {
       throw new Error("Checked-out bookings cannot be updated");
     }
 
@@ -717,11 +744,15 @@ exports.updateBooking = async (bookingId, data, user) => {
       booking.guestsIdentity = guestsIdentity;
     }
 
-    if (booking.status === "CHECKED_IN" || booking.invoiceId) {
+    if (normalizeBookingStatus(booking.status) === BOOKING_STATUSES.CHECKED_IN || booking.invoiceId) {
       await createOrSyncBookingInvoice({ booking, user, session });
     }
 
     await booking.save({ session });
+    await syncRoomStatusByRoomId({
+      roomId: booking.roomId,
+      session,
+    });
 
     await session.commitTransaction();
     session.endSession();
@@ -765,15 +796,11 @@ exports.deleteBooking = async (bookingId, user) => {
       throw new Error("Booking not found");
     }
 
-    if (booking.status === "CHECKED_IN") {
-      await Room.findByIdAndUpdate(
-        booking.roomId,
-        { status: "AVAILABLE" },
-        { session },
-      );
-    }
-
     await Booking.deleteOne({ _id: booking._id }).session(session);
+    await syncRoomStatusByRoomId({
+      roomId: booking.roomId,
+      session,
+    });
 
     await session.commitTransaction();
     session.endSession();
@@ -788,13 +815,17 @@ exports.updateBookingStatus = async (bookingId, status, user) => {
   requirePermission(user, "UPDATE_BOOKING");
 
   const allowedStatuses = [
-    "CONFIRMED",
-    "CHECKED_IN",
-    "CHECKED_OUT",
-    "CANCELLED",
+    BOOKING_STATUSES.BOOKED,
+    BOOKING_STATUSES.CONFIRMED,
+    BOOKING_STATUSES.CHECKED_IN,
+    BOOKING_STATUSES.COMPLETED,
+    BOOKING_STATUSES.CHECKED_OUT,
+    BOOKING_STATUSES.CANCELLED,
   ];
 
-  if (!allowedStatuses.includes(status)) {
+  const normalizedTargetStatus = normalizeBookingStatus(status);
+
+  if (!allowedStatuses.includes(String(status || "").toUpperCase())) {
     throw new Error("Invalid status");
   }
 
@@ -807,62 +838,56 @@ exports.updateBookingStatus = async (bookingId, status, user) => {
     }
 
     const booking = await getScopedBooking(bookingId, user, session);
+    const currentStatus = normalizeBookingStatus(booking.status);
 
-    if (status === "CHECKED_IN") {
-      if (booking.status === "CHECKED_OUT") {
+    if (normalizedTargetStatus === BOOKING_STATUSES.CHECKED_IN) {
+      if (currentStatus === BOOKING_STATUSES.COMPLETED) {
         throw new Error("Checked-out bookings cannot be checked in again");
       }
 
-      booking.status = "CHECKED_IN";
+      booking.status = BOOKING_STATUSES.CHECKED_IN;
       booking.actualCheckIn = booking.actualCheckIn || new Date();
-      await Room.findByIdAndUpdate(
-        booking.roomId,
-        { status: "OCCUPIED" },
-        { session },
-      );
       await createOrSyncBookingInvoice({ booking, user, session });
     }
 
-    if (status === "CHECKED_OUT") {
+    if (normalizedTargetStatus === BOOKING_STATUSES.COMPLETED) {
       if (booking.paymentStatus !== "PAID") {
         throw new Error("Payment must be completed before checkout.");
       }
 
-      if (booking.status !== "CHECKED_IN") {
+      if (currentStatus !== BOOKING_STATUSES.CHECKED_IN) {
         throw new Error("Only checked-in bookings can be checked out");
       }
 
-      booking.status = "CHECKED_OUT";
+      booking.status = BOOKING_STATUSES.COMPLETED;
       booking.actualCheckOut = new Date();
-
-      await Room.findByIdAndUpdate(
-        booking.roomId,
-        { status: "AVAILABLE" },
-        { session },
-      );
     }
 
-    if (status === "CANCELLED") {
-      if (booking.status === "CHECKED_OUT") {
+    if (normalizedTargetStatus === BOOKING_STATUSES.CANCELLED) {
+      if (currentStatus === BOOKING_STATUSES.COMPLETED) {
         throw new Error("Checked-out bookings cannot be cancelled");
       }
 
-      if (booking.status === "CHECKED_IN") {
-        await Room.findByIdAndUpdate(
-          booking.roomId,
-          { status: "AVAILABLE" },
-          { session },
-        );
-      }
-
-      booking.status = "CANCELLED";
+      booking.status = BOOKING_STATUSES.CANCELLED;
     }
 
-    if (status === "CONFIRMED") {
-      booking.status = "CONFIRMED";
+    if (normalizedTargetStatus === BOOKING_STATUSES.BOOKED) {
+      if (currentStatus === BOOKING_STATUSES.CHECKED_IN) {
+        throw new Error("Checked-in bookings cannot be moved back to booked");
+      }
+
+      if (currentStatus === BOOKING_STATUSES.COMPLETED) {
+        throw new Error("Completed bookings cannot be re-opened");
+      }
+
+      booking.status = BOOKING_STATUSES.BOOKED;
     }
 
     await booking.save({ session });
+    await syncRoomStatusByRoomId({
+      roomId: booking.roomId,
+      session,
+    });
     await session.commitTransaction();
     session.endSession();
 
@@ -883,7 +908,7 @@ exports.addBookingService = async (bookingId, data, user) => {
   try {
     const booking = await getScopedBooking(bookingId, user, session);
 
-    if (booking.status !== "CHECKED_IN") {
+    if (normalizeBookingStatus(booking.status) !== BOOKING_STATUSES.CHECKED_IN) {
       throw new Error("Services can only be added after check-in");
     }
 
@@ -920,7 +945,7 @@ exports.updateBookingService = async (bookingId, serviceId, data, user) => {
   try {
     const booking = await getScopedBooking(bookingId, user, session);
 
-    if (booking.status === "CHECKED_OUT") {
+    if (normalizeBookingStatus(booking.status) === BOOKING_STATUSES.COMPLETED) {
       throw new Error("Checked-out bookings cannot be edited");
     }
 
@@ -941,7 +966,7 @@ exports.updateBookingService = async (bookingId, serviceId, data, user) => {
     service.total = normalizedService.total;
     service.updatedAt = new Date();
 
-    if (booking.status === "CHECKED_IN" || booking.invoiceId) {
+    if (normalizeBookingStatus(booking.status) === BOOKING_STATUSES.CHECKED_IN || booking.invoiceId) {
       await createOrSyncBookingInvoice({ booking, user, session });
     }
 
@@ -966,7 +991,7 @@ exports.removeBookingService = async (bookingId, serviceId, user) => {
   try {
     const booking = await getScopedBooking(bookingId, user, session);
 
-    if (booking.status === "CHECKED_OUT") {
+    if (normalizeBookingStatus(booking.status) === BOOKING_STATUSES.COMPLETED) {
       throw new Error("Checked-out bookings cannot be edited");
     }
 
@@ -982,7 +1007,7 @@ exports.removeBookingService = async (bookingId, serviceId, user) => {
 
     service.deleteOne();
 
-    if (booking.status === "CHECKED_IN" || booking.invoiceId) {
+    if (normalizeBookingStatus(booking.status) === BOOKING_STATUSES.CHECKED_IN || booking.invoiceId) {
       await createOrSyncBookingInvoice({ booking, user, session });
     }
 
@@ -1007,7 +1032,7 @@ exports.processBookingPayment = async (bookingId, method, user) => {
 
   const booking = await getScopedBooking(bookingId, user);
 
-  if (booking.status !== "CHECKED_IN") {
+  if (normalizeBookingStatus(booking.status) !== BOOKING_STATUSES.CHECKED_IN) {
     throw new Error("Payment can only be processed for checked-in bookings");
   }
 
@@ -1069,7 +1094,12 @@ exports.generateBookingInvoice = async (bookingId, user) => {
   let invoice = await getBookingInvoice(booking._id);
 
   if (!invoice) {
-    if (booking.status !== "CHECKED_IN" && booking.status !== "CHECKED_OUT") {
+    const normalizedStatus = normalizeBookingStatus(booking.status);
+
+    if (
+      normalizedStatus !== BOOKING_STATUSES.CHECKED_IN &&
+      normalizedStatus !== BOOKING_STATUSES.COMPLETED
+    ) {
       throw new Error("Invoice is available after check-in");
     }
 
@@ -1098,3 +1128,9 @@ exports.generateBookingInvoice = async (bookingId, user) => {
     pdfUrl: `/api/invoices/${invoice.invoiceId}/pdf`,
   };
 };
+
+exports.checkInBooking = async (bookingId, user) =>
+  exports.updateBookingStatus(bookingId, BOOKING_STATUSES.CHECKED_IN, user);
+
+exports.checkOutBooking = async (bookingId, user) =>
+  exports.updateBookingStatus(bookingId, BOOKING_STATUSES.COMPLETED, user);

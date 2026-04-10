@@ -1,6 +1,13 @@
 const Room = require("./room.model");
 const Booking = require("../booking/booking.model");
 const Branch = require("../branch/branch.model");
+const {
+  ROOM_STATUSES,
+  MANUAL_OVERRIDE_STATUSES,
+  BOOKING_STATUSES,
+  syncBranchRoomStatuses,
+  syncRoomStatusByRoomId,
+} = require("./roomStatus.util");
 
 const requirePermission = (user, permission) => {
   if (user.isPlatformAdmin) return;
@@ -132,11 +139,22 @@ exports.getRooms = async (user, checkInDate, checkOutDate, totalGuests, status) 
       }));
   }
 
-  const rooms = await Room.find({
-    branchId: user.branchId,
-    isActive: true,
-    ...(totalGuests && { capacity: { $gte: Number(totalGuests) } }),
-    ...(normalizedStatus ? { status: normalizedStatus } : {}),
+  const syncedRooms = await syncBranchRoomStatuses({ branchId: user.branchId });
+
+  let rooms = syncedRooms.filter((room) => {
+    if (room.isActive !== true) {
+      return false;
+    }
+
+    if (totalGuests && Number(room.capacity) < Number(totalGuests)) {
+      return false;
+    }
+
+    if (normalizedStatus && room.status !== normalizedStatus) {
+      return false;
+    }
+
+    return true;
   });
 
   if (!checkInDate || !checkOutDate) {
@@ -148,7 +166,13 @@ exports.getRooms = async (user, checkInDate, checkOutDate, totalGuests, status) 
 
   const overlappingBookings = await Booking.find({
     branchId: user.branchId,
-    status: { $ne: "CANCELLED" },
+    status: {
+      $in: [
+        BOOKING_STATUSES.BOOKED,
+        BOOKING_STATUSES.CONFIRMED,
+        BOOKING_STATUSES.CHECKED_IN,
+      ],
+    },
     checkInDate: { $lt: checkOut },
     checkOutDate: { $gt: checkIn },
   }).select("roomId");
@@ -189,6 +213,8 @@ exports.updateRoom = async (roomId, data, user) => {
 exports.changeRoomStatus = async (roomId, status, user) => {
   requirePermission(user, "UPDATE_ROOM");
 
+  const normalizedStatus = String(status || "").toUpperCase();
+
   const room = await Room.findById(roomId);
 
   if (!room) {
@@ -204,7 +230,34 @@ exports.changeRoomStatus = async (roomId, status, user) => {
     (user.role === "BRANCH_MANAGER" &&
       room.branchId?.toString() === user.branchId)
   ) {
-    return Room.findByIdAndUpdate(roomId, { status }, { new: true });
+    if (!MANUAL_OVERRIDE_STATUSES.has(normalizedStatus)) {
+      const error = new Error(
+        "Manual status can only be set to AVAILABLE, MAINTENANCE, or BLOCKED",
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (room.status === ROOM_STATUSES.OCCUPIED) {
+      const error = new Error(
+        "Occupied rooms cannot be changed manually without an explicit override",
+      );
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const updatedRoom = await Room.findByIdAndUpdate(
+      roomId,
+      {
+        status: normalizedStatus,
+        manualOverrideActive: true,
+        manualOverrideStatus: normalizedStatus,
+        updatedBy: user._id,
+      },
+      { new: true },
+    );
+
+    return updatedRoom;
   }
 
   const error = new Error("Access denied");
@@ -257,3 +310,6 @@ exports.restoreRoom = async (roomId, user) => {
 
   return Room.findByIdAndUpdate(roomId, { isActive: true }, { new: true });
 };
+
+exports.syncRoomLifecycleStatus = async (roomId) =>
+  syncRoomStatusByRoomId({ roomId });

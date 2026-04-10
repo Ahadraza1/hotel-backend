@@ -281,8 +281,15 @@ const bookingSchema = new mongoose.Schema(
     // Booking Lifecycle
     status: {
       type: String,
-      enum: ["CONFIRMED", "CHECKED_IN", "CHECKED_OUT", "CANCELLED"],
-      default: "CONFIRMED",
+      enum: [
+        "BOOKED",
+        "CONFIRMED",
+        "CHECKED_IN",
+        "COMPLETED",
+        "CHECKED_OUT",
+        "CANCELLED",
+      ],
+      default: "BOOKED",
       index: true,
     },
 
