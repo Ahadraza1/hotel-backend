@@ -32,6 +32,12 @@ router.get(
   authorize("SUPER_ADMIN", "CORPORATE_ADMIN"),
   subscriptionController.getBranchEligibility,
 );
+router.get(
+  "/:organizationId",
+  requireAuth,
+  authorize("SUPER_ADMIN", "CORPORATE_ADMIN"),
+  subscriptionController.getOrganizationDetails,
+);
 
 router.post(
   "/plans",

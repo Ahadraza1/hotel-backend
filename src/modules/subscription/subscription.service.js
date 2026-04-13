@@ -1,13 +1,27 @@
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
+const PDFDocument = require("pdfkit");
+const { v4: uuidv4 } = require("uuid");
 const Razorpay = require("razorpay");
 const Branch = require("../branch/branch.model");
 const Organization = require("../organization/organization.model");
+const User = require("../user/user.model");
 const SubscriptionPlan = require("./subscriptionPlan.model");
 const OrganizationSubscription = require("./organizationSubscription.model");
 const SubscriptionPayment = require("./subscriptionPayment.model");
+const { getSystemSettings } = require("../systemSettings/systemSettings.store");
+const {
+  DEFAULT_CURRENCY,
+  formatCurrency,
+} = require("../../utils/currency");
 
 const FIVE_DAYS_IN_MS = 5 * 24 * 60 * 60 * 1000;
 const TRIAL_DAYS = 14;
+const SUBSCRIPTION_INVOICE_DIR = path.join(
+  __dirname,
+  "../../storage/subscription-invoices",
+);
 const DASHBOARD_ALLOWED_STATUSES = new Set(["active", "trial"]);
 const PLAN_HIERARCHY = ["FREE", "BASIC", "PROFESSIONAL", "ENTERPRISE"];
 const PLAN_NAME_ALIASES = {
@@ -184,6 +198,244 @@ const addTrialPeriod = (startDate, days = TRIAL_DAYS) => {
   return nextDate;
 };
 
+const capitalize = (value) => {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : "-";
+};
+
+const formatDate = (value) => {
+  if (!value) return null;
+
+  return new Date(value).toLocaleDateString("en-IN", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+};
+
+const buildAddress = (organization) =>
+  [
+    organization?.headquartersAddress,
+    organization?.city,
+    organization?.state,
+    organization?.country,
+  ]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .join(", ") || "Not provided";
+
+const resolveOrganizationContact = async (organizationId) => {
+  const corporateAdmin = await User.findOne({
+    organizationId,
+    role: "CORPORATE_ADMIN",
+  })
+    .sort({ createdAt: 1 })
+    .lean();
+
+  return {
+    email: corporateAdmin?.email || "",
+    phone: corporateAdmin?.phone || "",
+  };
+};
+
+const getBillingPeriod = (payment) => {
+  const start =
+    payment?.billingPeriodStart || payment?.paymentDate || payment?.createdAt || new Date();
+  const end =
+    payment?.billingPeriodEnd ||
+    addBillingCycle(start, payment?.billingCycle === "yearly" ? "yearly" : "monthly");
+
+  return {
+    start: new Date(start),
+    end: new Date(end),
+  };
+};
+
+const ensureSubscriptionInvoiceDir = async () => {
+  await fs.promises.mkdir(SUBSCRIPTION_INVOICE_DIR, { recursive: true });
+};
+
+const generateSubscriptionInvoicePdf = async ({
+  organization,
+  subscription,
+  payment,
+  currencyCode,
+}) => {
+  await ensureSubscriptionInvoiceDir();
+
+  const filePath = path.join(SUBSCRIPTION_INVOICE_DIR, `${payment.invoiceId}.pdf`);
+  const doc = new PDFDocument({ size: "A4", margin: 42 });
+  const stream = fs.createWriteStream(filePath);
+  const { start, end } = getBillingPeriod(payment);
+  const subtotal = Number(payment.amount || 0);
+  const taxAmount = Number(payment.taxAmount || 0);
+  const total = subtotal + taxAmount;
+  const accent = "#4169AF";
+  const softBlue = "#EEF4FF";
+  const softGreen = "#EEF8F2";
+  const softGray = "#F5F7FA";
+  const text = "#1F2937";
+  const muted = "#6B7280";
+
+  doc.pipe(stream);
+
+  doc.rect(0, 0, doc.page.width, 16).fill(accent);
+  doc.roundedRect(42, 42, doc.page.width - 84, 110, 24).fill(softBlue);
+
+  doc
+    .fillColor(text)
+    .font("Helvetica-Bold")
+    .fontSize(26)
+    .text("Subscription Invoice", 60, 64);
+
+  doc
+    .fillColor(muted)
+    .font("Helvetica")
+    .fontSize(11)
+    .text(`Invoice ID: ${payment.invoiceId}`, 60, 100)
+    .text(`Payment Date: ${formatDate(payment.paymentDate) || "-"}`, 60, 118);
+
+  doc
+    .fillColor(accent)
+    .font("Helvetica-Bold")
+    .fontSize(18)
+    .text(organization.name || "Organization", 350, 70, {
+      width: 180,
+      align: "right",
+    });
+
+  doc
+    .fillColor(muted)
+    .font("Helvetica")
+    .fontSize(10)
+    .text(buildAddress(organization), 350, 98, {
+      width: 180,
+      align: "right",
+    });
+
+  let y = 182;
+  const drawSection = (title, lines, tint) => {
+    const sectionHeight = 118;
+    doc.roundedRect(42, y, doc.page.width - 84, sectionHeight, 20).fill(tint);
+    doc
+      .fillColor(text)
+      .font("Helvetica-Bold")
+      .fontSize(13)
+      .text(title, 60, y + 18);
+
+    let lineY = y + 48;
+    lines.forEach(([label, value], index) => {
+      const x = index % 2 === 0 ? 60 : 310;
+      const rowY = lineY + Math.floor(index / 2) * 30;
+
+      doc
+        .fillColor(muted)
+        .font("Helvetica")
+        .fontSize(9)
+        .text(label, x, rowY);
+      doc
+        .fillColor(text)
+        .font("Helvetica-Bold")
+        .fontSize(11)
+        .text(value, x, rowY + 12, {
+          width: 180,
+        });
+    });
+
+    y += sectionHeight + 18;
+  };
+
+  drawSection(
+    "Organization Info",
+    [
+      ["Organization", organization.name || "-"],
+      ["Email", organization.contactEmail || "-"],
+      ["Phone", organization.contactPhone || "-"],
+      ["Address", buildAddress(organization)],
+    ],
+    softGray,
+  );
+
+  drawSection(
+    "Plan Details",
+    [
+      ["Plan", subscription?.activePlan?.name || subscription?.planSnapshot?.name || "-"],
+      ["Billing Cycle", capitalize(payment.billingCycle)],
+      ["Billing Period", `${formatDate(start)} - ${formatDate(end)}`],
+      ["Status", capitalize(payment.status)],
+    ],
+    softGreen,
+  );
+
+  doc.roundedRect(42, y, doc.page.width - 84, 132, 20).fill("#FFFFFF");
+  doc.strokeColor("#D7DFEA").lineWidth(1).roundedRect(42, y, doc.page.width - 84, 132, 20).stroke();
+  doc
+    .fillColor(text)
+    .font("Helvetica-Bold")
+    .fontSize(13)
+    .text("Amount Summary", 60, y + 18);
+
+  const summaryLines = [
+    ["Plan Amount", formatCurrency(subtotal, currencyCode)],
+    ["GST / Tax", formatCurrency(taxAmount, currencyCode)],
+    ["Total Paid", formatCurrency(total, currencyCode)],
+  ];
+
+  summaryLines.forEach(([label, value], index) => {
+    const rowY = y + 52 + index * 24;
+    doc
+      .fillColor(muted)
+      .font("Helvetica")
+      .fontSize(10)
+      .text(label, 60, rowY);
+    doc
+      .fillColor(text)
+      .font(index === summaryLines.length - 1 ? "Helvetica-Bold" : "Helvetica")
+      .fontSize(index === summaryLines.length - 1 ? 13 : 11)
+      .text(value, 390, rowY, { width: 140, align: "right" });
+  });
+
+  y += 162;
+
+  doc
+    .fillColor(muted)
+    .font("Helvetica")
+    .fontSize(9)
+    .text(
+      "This invoice was generated by Luxury HMS for subscription billing records.",
+      42,
+      y,
+      { width: doc.page.width - 84, align: "center" },
+    );
+
+  doc.end();
+
+  await new Promise((resolve, reject) => {
+    stream.on("finish", resolve);
+    stream.on("error", reject);
+  });
+
+  return filePath;
+};
+
+const assertOrganizationAccess = async (user, organizationId) => {
+  if (!organizationId) {
+    throw new Error("Organization is required");
+  }
+
+  if (user.role !== "SUPER_ADMIN" && user.organizationId !== organizationId) {
+    throw new Error("You do not have access to this organization");
+  }
+
+  const organization = await Organization.findOne({ organizationId }).lean();
+
+  if (!organization) {
+    throw new Error("Organization not found");
+  }
+
+  return organization;
+};
+
 const resolveRestrictionReason = ({
   status,
   branchLimitReached,
@@ -251,6 +503,11 @@ const recordSubscriptionPayment = async ({
   paymentDate,
   status = "success",
 }) => {
+  const billingPeriodStart = paymentDate || new Date();
+  const billingPeriodEnd = isFreePlan(plan, billingCycle)
+    ? addTrialPeriod(billingPeriodStart)
+    : addBillingCycle(billingPeriodStart, billingCycle);
+
   await SubscriptionPayment.create({
     organizationId,
     planId: plan?._id || null,
@@ -262,6 +519,9 @@ const recordSubscriptionPayment = async ({
     orderId: payment?.orderId || null,
     paymentId: payment?.paymentId || null,
     signature: payment?.signature || null,
+    billingPeriodStart,
+    billingPeriodEnd,
+    taxAmount: Number(payment?.taxAmount || 0),
     assignedBy: assignedBy || null,
   });
 };
@@ -654,6 +914,225 @@ exports.getBranchEligibility = async (user, organizationIdOverride = null) => {
     organizationId,
     organizationName: organization.name,
     ...(await exports.getSubscriptionAccessForOrganization(organizationId)),
+  };
+};
+
+exports.getOrganizationSubscriptionDetails = async (user, organizationId) => {
+  const organization = await assertOrganizationAccess(user, organizationId);
+  const contact = await resolveOrganizationContact(organizationId);
+  const [subscriptionDoc, payments, branchCount] = await Promise.all([
+    getOrganizationSubscriptionDoc(organizationId),
+    SubscriptionPayment.find({ organizationId })
+      .sort({ paymentDate: -1, createdAt: -1 })
+      .lean(),
+    getOrganizationBranchCount(organizationId),
+  ]);
+
+  const subscription = await serializeSubscription(organizationId, subscriptionDoc);
+  const totalPaid = payments
+    .filter((payment) => payment.status === "success")
+    .reduce(
+      (sum, payment) => sum + Number(payment.amount || 0) + Number(payment.taxAmount || 0),
+      0,
+    );
+
+  const serializedPayments = payments.map((payment) => ({
+    _id: payment._id,
+    invoiceId: payment.invoiceId || null,
+    date: payment.paymentDate,
+    amount: Number(payment.amount || 0) + Number(payment.taxAmount || 0),
+    subtotal: Number(payment.amount || 0),
+    taxAmount: Number(payment.taxAmount || 0),
+    paymentMethod: payment.provider || "manual",
+    status:
+      payment.status === "success"
+        ? "paid"
+        : payment.status === "failed"
+          ? "failed"
+          : "pending",
+    billingCycle: payment.billingCycle,
+    paymentId: payment.paymentId || null,
+    orderId: payment.orderId || null,
+    hasInvoice: Boolean(payment.invoicePdfPath),
+    billingPeriodStart: payment.billingPeriodStart,
+    billingPeriodEnd: payment.billingPeriodEnd,
+  }));
+
+  return {
+    organization: {
+      _id: organization._id,
+      organizationId: organization.organizationId,
+      name: organization.name,
+      email: contact.email,
+      phone: contact.phone || organization.contactPhone || "",
+      address: buildAddress(organization),
+      totalBranches: branchCount,
+      createdDate: organization.createdAt,
+      currency: organization.currency,
+      status: subscription.subscriptionStatus,
+    },
+    subscription: {
+      planName: subscription.activePlan?.name || "No Active Plan",
+      planType: subscription.billingCycle,
+      price:
+        subscription.activePlan && subscription.billingCycle
+          ? getPlanAmount(subscription.activePlan, subscription.billingCycle)
+          : 0,
+      startDate: subscription.startDate,
+      expiryDate: subscription.expiryDate,
+      autoRenewal: false,
+      status: subscription.subscriptionStatus,
+      branchUsage: subscription.branchUsage,
+      branchLimit: subscription.branchLimit,
+    },
+    kpis: {
+      activePlan: subscription.activePlan?.name || "No Active Plan",
+      billingCycle: subscription.billingCycle ? capitalize(subscription.billingCycle) : "-",
+      branchUsage:
+        subscription.branchLimit === null
+          ? `${subscription.branchUsage} / Unlimited`
+          : `${subscription.branchUsage} / ${subscription.branchLimit || 0}`,
+      nextBillingDate: formatDate(subscription.expiryDate),
+      totalPaid,
+      status: subscription.subscriptionStatus,
+    },
+    payments: serializedPayments,
+  };
+};
+
+exports.generateSubscriptionInvoice = async ({
+  user,
+  organizationId,
+  paymentId = null,
+}) => {
+  const organization = await assertOrganizationAccess(user, organizationId);
+  const paymentQuery = {
+    organizationId,
+    ...(paymentId ? { _id: paymentId } : {}),
+  };
+
+  const payment = await SubscriptionPayment.findOne(paymentQuery).sort({
+    paymentDate: -1,
+    createdAt: -1,
+  });
+
+  if (!payment) {
+    throw new Error("Subscription payment not found");
+  }
+
+  const subscriptionDoc = await getOrganizationSubscriptionDoc(organizationId);
+  const subscription = await serializeSubscription(organizationId, subscriptionDoc);
+  const contact = await resolveOrganizationContact(organizationId);
+  const settings = await getSystemSettings();
+  const currencyCode = organization.currency || settings.baseCurrency || DEFAULT_CURRENCY;
+
+  if (!payment.invoiceId) {
+    payment.invoiceId = `SUB-${uuidv4().split("-")[0].toUpperCase()}`;
+  }
+
+  const pdfPath = await generateSubscriptionInvoicePdf({
+    organization: {
+      ...organization,
+      contactEmail: contact.email,
+      contactPhone: contact.phone || organization.contactPhone || "",
+    },
+    subscription,
+    payment,
+    currencyCode,
+  });
+
+  payment.invoicePdfPath = pdfPath;
+  await payment.save();
+
+  return {
+    invoiceId: payment.invoiceId,
+    paymentId: payment._id,
+    pdfUrl: `/api/invoices/${payment.invoiceId}/pdf?download=1`,
+  };
+};
+
+exports.getSubscriptionInvoiceByInvoiceId = async (user, invoiceId) => {
+  const payment = await SubscriptionPayment.findOne({ invoiceId }).lean();
+
+  if (!payment) {
+    throw new Error("Invoice not found");
+  }
+
+  const organization = await assertOrganizationAccess(user, payment.organizationId);
+  const subscriptionDoc = await getOrganizationSubscriptionDoc(payment.organizationId);
+  const subscription = await serializeSubscription(payment.organizationId, subscriptionDoc);
+  const contact = await resolveOrganizationContact(payment.organizationId);
+  const settings = await getSystemSettings();
+  const currencyCode = organization.currency || settings.baseCurrency || DEFAULT_CURRENCY;
+
+  return {
+    invoiceId: payment.invoiceId,
+    organizationId: payment.organizationId,
+    organizationName: organization.name,
+    amount: Number(payment.amount || 0) + Number(payment.taxAmount || 0),
+    subtotal: Number(payment.amount || 0),
+    taxAmount: Number(payment.taxAmount || 0),
+    paymentDate: payment.paymentDate,
+    billingPeriodStart: payment.billingPeriodStart,
+    billingPeriodEnd: payment.billingPeriodEnd,
+    status:
+      payment.status === "success"
+        ? "paid"
+        : payment.status === "failed"
+          ? "failed"
+          : "pending",
+    paymentMethod: payment.provider || "manual",
+    hasPdf: Boolean(payment.invoicePdfPath),
+    pdfUrl: `/api/invoices/${payment.invoiceId}/pdf`,
+    organization: {
+      name: organization.name,
+      email: contact.email,
+      phone: contact.phone || organization.contactPhone || "",
+      address: buildAddress(organization),
+    },
+    subscription: {
+      planName: subscription.activePlan?.name || "-",
+      billingCycle: capitalize(payment.billingCycle),
+    },
+    currencyCode,
+    formattedAmount: formatCurrency(
+      Number(payment.amount || 0) + Number(payment.taxAmount || 0),
+      currencyCode,
+    ),
+  };
+};
+
+exports.getSubscriptionInvoicePdfPath = async (user, invoiceId) => {
+  const payment = await SubscriptionPayment.findOne({ invoiceId });
+
+  if (!payment) {
+    throw new Error("Invoice not found");
+  }
+
+  await assertOrganizationAccess(user, payment.organizationId);
+
+  if (payment.invoicePdfPath && fs.existsSync(payment.invoicePdfPath)) {
+    return {
+      filePath: payment.invoicePdfPath,
+      invoiceId: payment.invoiceId,
+    };
+  }
+
+  await exports.generateSubscriptionInvoice({
+    user,
+    organizationId: payment.organizationId,
+    paymentId: payment._id,
+  });
+
+  const refreshedPayment = await SubscriptionPayment.findOne({ invoiceId }).lean();
+
+  if (!refreshedPayment?.invoicePdfPath || !fs.existsSync(refreshedPayment.invoicePdfPath)) {
+    throw new Error("Invoice PDF could not be generated");
+  }
+
+  return {
+    filePath: refreshedPayment.invoicePdfPath,
+    invoiceId: refreshedPayment.invoiceId,
   };
 };
 

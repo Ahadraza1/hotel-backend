@@ -4,8 +4,27 @@ const router = express.Router();
 const invoiceController = require("./invoice.controller");
 
 const requireAuth = require("../../middleware/requireAuth.middleware");
+const authorize = require("../../middleware/authorize.middleware");
 const requirePermission = require("../../middleware/requirePermission.middleware");
 const auditMiddleware = require("../audit/audit.middleware");
+
+/*
+  Get All Invoices (Branch scoped)
+  GET /api/invoices
+*/
+router.post(
+  "/generate",
+  requireAuth,
+  authorize("SUPER_ADMIN", "CORPORATE_ADMIN"),
+  invoiceController.generateSubscriptionInvoice,
+);
+
+router.get(
+  "/:invoiceId",
+  requireAuth,
+  authorize("SUPER_ADMIN", "CORPORATE_ADMIN"),
+  invoiceController.getSubscriptionInvoice,
+);
 
 /*
   Get All Invoices (Branch scoped)
@@ -70,7 +89,6 @@ router.delete(
 router.get(
   "/:invoiceId/pdf",
   requireAuth,
-  requirePermission(["ACCESS_FINANCE", "VIEW_EXPENSE"]),
   invoiceController.getInvoicePDF
 );
 

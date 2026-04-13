@@ -75,6 +75,18 @@ exports.getOrganizations = async (req, res) => {
   }
 };
 
+exports.getOrganizationDetails = async (req, res) => {
+  try {
+    const data = await subscriptionService.getOrganizationSubscriptionDetails(
+      req.user,
+      req.params.organizationId,
+    );
+    res.status(200).json({ data });
+  } catch (error) {
+    handleError(res, error, 500);
+  }
+};
+
 exports.assignPlan = async (req, res) => {
   try {
     const data = await subscriptionService.assignPlanToOrganization({

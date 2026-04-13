@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { v4: uuidv4 } = require("uuid");
 
 const subscriptionPaymentSchema = new mongoose.Schema(
   {
@@ -48,6 +49,28 @@ const subscriptionPaymentSchema = new mongoose.Schema(
     signature: {
       type: String,
       default: null,
+    },
+    invoiceId: {
+      type: String,
+      default: () => `SUB-${uuidv4().split("-")[0].toUpperCase()}`,
+      index: true,
+    },
+    invoicePdfPath: {
+      type: String,
+      default: null,
+    },
+    billingPeriodStart: {
+      type: Date,
+      default: null,
+    },
+    billingPeriodEnd: {
+      type: Date,
+      default: null,
+    },
+    taxAmount: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
     assignedBy: {
       type: mongoose.Schema.Types.ObjectId,

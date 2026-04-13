@@ -1,4 +1,5 @@
 const invoiceService = require("./invoice.service");
+const subscriptionService = require("../subscription/subscription.service");
 const asyncHandler = require("../../utils/asyncHandler");
 const Invoice = require("./invoice.model");
 const mongoose = require("mongoose");
@@ -30,6 +31,32 @@ exports.getInvoices = asyncHandler(async (req, res) => {
     success: true,
     count: invoices.length,
     data: invoices,
+  });
+});
+
+exports.generateSubscriptionInvoice = asyncHandler(async (req, res) => {
+  const data = await subscriptionService.generateSubscriptionInvoice({
+    user: req.user,
+    organizationId: req.body.organizationId,
+    paymentId: req.body.paymentId || null,
+  });
+
+  return res.status(200).json({
+    success: true,
+    message: "Invoice generated successfully",
+    data,
+  });
+});
+
+exports.getSubscriptionInvoice = asyncHandler(async (req, res) => {
+  const data = await subscriptionService.getSubscriptionInvoiceByInvoiceId(
+    req.user,
+    req.params.invoiceId,
+  );
+
+  return res.status(200).json({
+    success: true,
+    data,
   });
 });
 
@@ -89,6 +116,24 @@ exports.deactivateInvoice = asyncHandler(async (req, res) => {
 */
 exports.getInvoicePDF = asyncHandler(async (req, res) => {
   const { invoiceId } = req.params;
+
+  const subscriptionInvoice = await subscriptionService
+    .getSubscriptionInvoicePdfPath(req.user, invoiceId)
+    .catch(() => null);
+
+  if (subscriptionInvoice?.filePath) {
+    res.setHeader("Content-Type", "application/pdf");
+
+    if (req.query.download) {
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename=invoice-${subscriptionInvoice.invoiceId}.pdf`,
+      );
+    }
+
+    fs.createReadStream(subscriptionInvoice.filePath).pipe(res);
+    return;
+  }
 
   const invoice = await Invoice.findOne({
     invoiceId,
