@@ -215,7 +215,7 @@ if (mongoose.Types.ObjectId.isValid(finalOrganizationId)) {
     EMAIL TEMPLATE
   */
   const html = `
-    <h2>You're invited to join Luxury HMS</h2>
+    <h2>You're invited to join HotelDesk</h2>
 
     <p>Hello <b>${manager.name}</b>,</p>
 

@@ -1,6 +1,6 @@
 const DEFAULT_SETTINGS = {
-  platformName: "Luxury HMS",
-  supportEmail: "support@luxuryhms.com",
+  platformName: "HotelDesk",
+  supportEmail: "support@hoteldesk.com",
   maintenanceMode: false,
   maxBranches: 0,
   defaultLanguage: "English",

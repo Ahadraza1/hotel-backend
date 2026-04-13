@@ -89,10 +89,10 @@ const sendCorporateAdminInvite = async (
   inviteLink,
   organizationName,
 ) => {
-  const subject = "You're Invited to Join Luxury HMS";
+  const subject = "You're Invited to Join HotelDesk";
   const html = buildLuxuryEmailShell({
     eyebrow: "HotelOS Invitation Desk",
-    title: "Welcome to Luxury HMS",
+    title: "Welcome to Hotel Desk",
     intro: `Hello <strong style="color: #2d2004;">${escapeHtml(name)}</strong>, you have been invited to join the organization below as a Corporate Administrator.`,
     details: `
       <p style="margin: 0 0 12px; font-size: 15px; color: #4a3917;"><strong style="color: #b48a2c;">Organization:</strong> ${escapeHtml(organizationName)}</p>
@@ -117,10 +117,10 @@ const sendInvitationEmail = async (
   organizationName,
   branchName = null
 ) => {
-  const subject = "You're Invited to Join Luxury HMS";
+  const subject = "You're Invited to Join HotelDesk";
   const html = buildLuxuryEmailShell({
     eyebrow: "HotelOS Invitation Desk",
-    title: "Welcome to Luxury HMS",
+    title: "Welcome to Hotel Desk",
     intro: `Hello <strong style="color: #2d2004;">${escapeHtml(name)}</strong>, you have been invited to join the organization below.`,
     details: `
       <p style="margin: 0 0 12px; font-size: 15px; color: #4a3917;"><strong style="color: #b48a2c;">Organization:</strong> ${escapeHtml(organizationName)}</p>
@@ -216,17 +216,17 @@ const sendContactThankYouEmail = async ({ name, email }) => {
 };
 
 const sendPasswordResetOtpEmail = async (email, otp) => {
-  const subject = "Your Luxury HMS password reset code";
+  const subject = "Your HotelDesk password reset code";
   const html = buildLuxuryEmailShell({
     eyebrow: "HotelOS Security Desk",
     title: "Password Reset Verification",
     intro:
-      "Use the one-time password below to reset your Luxury HMS account password.",
+      "Use the one-time password below to reset your HotelDesk account password.",
     details: `
       <p style="margin: 0 0 12px; font-size: 15px; color: #4a3917;">Your verification code is:</p>
       <p style="margin: 0; font-size: 32px; letter-spacing: 8px; font-weight: 700; color: #b48a2c; text-align: center;">${escapeHtml(otp)}</p>
     `,
-    actionLabel: "Open Luxury HMS",
+    actionLabel: "Open HotelDesk",
     actionHref: process.env.FRONTEND_URL || "http://localhost:8080/login",
     footerNote: "This OTP expires in 5 minutes. Do not share it with anyone.",
   });
