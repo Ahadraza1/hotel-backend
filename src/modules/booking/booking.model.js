@@ -52,6 +52,33 @@ const bookingSchema = new mongoose.Schema(
       trim: true,
     },
 
+    sourceType: {
+      type: String,
+      enum: ["direct", "ota"],
+      default: "direct",
+      trim: true,
+      index: true,
+    },
+
+    sourceName: {
+      type: String,
+      trim: true,
+      default: null,
+    },
+
+    externalBookingId: {
+      type: String,
+      trim: true,
+      unique: true,
+      sparse: true,
+      index: true,
+    },
+
+    rawData: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
+
     mealType: {
       type: String,
       enum: ["INCLUDED", "NOT_INCLUDED"],

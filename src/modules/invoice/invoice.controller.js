@@ -229,7 +229,7 @@ exports.getInvoicePDF = asyncHandler(async (req, res) => {
     SEND PDF
   */
 
-  const filePath = invoice.pdfUrl;
+  let filePath = invoice.pdfUrl;
 
   if (!fs.existsSync(filePath)) {
     // regenerate pdf
@@ -253,6 +253,7 @@ exports.getInvoicePDF = asyncHandler(async (req, res) => {
 
     invoice.pdfUrl = pdfPath;
     await invoice.save();
+    filePath = pdfPath;
   }
 
   res.setHeader("Content-Type", "application/pdf");
@@ -264,7 +265,19 @@ exports.getInvoicePDF = asyncHandler(async (req, res) => {
     );
   }
 
-  fs.createReadStream(filePath).pipe(res);
+  const stream = fs.createReadStream(filePath);
+  stream.on("error", (error) => {
+    if (!res.headersSent) {
+      res.status(404).json({
+        status: "fail",
+        message: error.message || "Invoice PDF not found",
+      });
+      return;
+    }
+
+    res.end();
+  });
+  stream.pipe(res);
 });
 
 /*

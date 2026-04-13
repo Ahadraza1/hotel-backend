@@ -2,6 +2,7 @@ const Booking = require("./booking.model");
 const Room = require("../room/room.model");
 const Invoice = require("../invoice/invoice.model");
 const Branch = require("../branch/branch.model");
+const RoomMapping = require("../integrations/roomMapping.model");
 const guestService = require("../crm/guest.service");
 const branchSettingsService = require("../branchSettings/branchSettings.service");
 const notificationService = require("../notification/notification.service");
@@ -91,6 +92,27 @@ const normalizeIdentityProof = (source = {}) => {
 
   return null;
 };
+
+const normalizeString = (value) => String(value || "").trim();
+
+const parseIsoDate = (value, label) => {
+  const normalizedValue = normalizeString(value);
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedValue)) {
+    throw new Error(`${label} must be in YYYY-MM-DD format`);
+  }
+
+  const date = new Date(`${normalizedValue}T00:00:00.000Z`);
+
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`${label} is invalid`);
+  }
+
+  return date;
+};
+
+const escapeRegex = (value) =>
+  String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const normalizeGuests = (guests) =>
   Array.isArray(guests)
@@ -484,6 +506,16 @@ const getScopedBooking = async (bookingId, user, session = null) => {
   return booking;
 };
 
+const createSystemBranchUser = (branch) => ({
+  id: branch.createdBy,
+  userId: branch.createdBy,
+  branchId: branch._id.toString(),
+  organizationId: branch.organizationId,
+  role: "BRANCH_MANAGER",
+  permissions: [],
+  isPlatformAdmin: false,
+});
+
 exports.createBooking = async (data, user) => {
   requirePermission(user, "CREATE_BOOKING");
 
@@ -629,6 +661,192 @@ exports.createBooking = async (data, user) => {
     });
 
     return bookingArr[0];
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    throw error;
+  }
+};
+
+exports.createOtaBooking = async (payload = {}) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const guestName = normalizeString(payload.guestName);
+    const guestPhone = normalizeString(payload.phone);
+    const platform = normalizeString(payload.platform).toLowerCase();
+    const externalBookingId = normalizeString(
+      payload.bookingId || payload.externalBookingId,
+    );
+    const externalRoomName = normalizeString(payload.roomType);
+    const branchId = normalizeString(payload.branchId);
+
+    if (!guestName) {
+      throw new Error("guestName is required");
+    }
+
+    if (!branchId) {
+      throw new Error("branchId is required");
+    }
+
+    if (!platform) {
+      throw new Error("platform is required");
+    }
+
+    if (!externalBookingId) {
+      throw new Error("bookingId is required");
+    }
+
+    if (!externalRoomName) {
+      throw new Error("roomType is required");
+    }
+
+    const checkInDate = parseIsoDate(payload.checkIn, "checkIn");
+    const checkOutDate = parseIsoDate(payload.checkOut, "checkOut");
+
+    if (checkOutDate <= checkInDate) {
+      throw new Error("checkOut must be after checkIn");
+    }
+
+    const existingBooking = await Booking.findOne({
+      externalBookingId,
+    }).session(session);
+
+    if (existingBooking) {
+      const duplicateError = new Error("External booking already exists");
+      duplicateError.statusCode = 409;
+      throw duplicateError;
+    }
+
+    const branch = await Branch.findById(branchId).session(session);
+
+    if (!branch) {
+      throw new Error("Branch not found");
+    }
+
+    const mapping = await RoomMapping.findOne({
+      branchId: branch._id,
+      externalRoomName,
+    }).session(session);
+
+    const actingUser = createSystemBranchUser(branch);
+    let roomAvailability = null;
+
+    if (mapping) {
+      roomAvailability = await ensureBookingRoomAvailability({
+        session,
+        roomId: mapping.internalRoomId,
+        user: actingUser,
+        checkInDate,
+        checkOutDate,
+      });
+    } else {
+      const fallbackRooms = await Room.find({
+        branchId: branch._id,
+        isActive: true,
+        roomType: {
+          $regex: `^${escapeRegex(externalRoomName)}$`,
+          $options: "i",
+        },
+      })
+        .sort({ roomNumber: 1 })
+        .session(session);
+
+      for (const fallbackRoom of fallbackRooms) {
+        try {
+          roomAvailability = await ensureBookingRoomAvailability({
+            session,
+            roomId: fallbackRoom._id,
+            user: actingUser,
+            checkInDate,
+            checkOutDate,
+          });
+          break;
+        } catch (error) {
+          if (error.message !== "Room already booked for selected dates") {
+            throw error;
+          }
+        }
+      }
+    }
+
+    if (!roomAvailability) {
+      throw new Error("Room mapping not found for supplied roomType");
+    }
+
+    const { room, checkIn, checkOut } = roomAvailability;
+
+    const nights =
+      (checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60 * 24);
+    const pricingSummary = await roomPricingService.calculateStayPricingForRoom({
+      room,
+      branchId: branch._id,
+      checkInDate,
+      checkOutDate,
+      session,
+    });
+
+    const bookingArr = await Booking.create(
+      [
+        {
+          bookingId: uuidv4(),
+          organizationId: branch.organizationId,
+          branchId: branch._id,
+          roomId: room._id,
+          guestName,
+          guestType: "ADULT",
+          bookingSource: "Online",
+          sourceType: "ota",
+          sourceName: platform,
+          externalBookingId,
+          rawData: payload,
+          mealType: "NOT_INCLUDED",
+          includedMeals: [],
+          paymentMode: "PREPAID",
+          guestPhone: guestPhone || undefined,
+          guestEmail: undefined,
+          totalGuests: 1,
+          guests: [],
+          checkInDate,
+          checkOutDate,
+          nights,
+          roomPricePerNight: pricingSummary.averageNightlyRate,
+          services: [],
+          totalAmount: pricingSummary.totalPrice,
+          paidAmount: 0,
+          paymentStatus: "PENDING",
+          status: BOOKING_STATUSES.BOOKED,
+          createdBy: actingUser.id,
+          updatedBy: actingUser.id,
+        },
+      ],
+      { session },
+    );
+
+    await syncRoomStatusByRoomId({
+      roomId: room._id,
+      session,
+    });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    const booking = bookingArr[0];
+    const bookingData = booking.toObject();
+
+    await guestService.syncGuestFromBooking(bookingData, actingUser);
+
+    await notificationService.createNotificationSafely({
+      title: "New OTA booking received",
+      message: `Booking ${booking.bookingId} was received from ${platform}.`,
+      type: "booking",
+      organizationId: branch.organizationId,
+      branchId: branch._id,
+      module: "BOOKING",
+    });
+
+    return booking;
   } catch (error) {
     await session.abortTransaction();
     session.endSession();

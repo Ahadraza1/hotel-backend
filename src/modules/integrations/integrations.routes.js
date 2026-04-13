@@ -7,6 +7,14 @@ const requireAuth = require("../../middleware/requireAuth.middleware");
 const requirePermission = require("../../middleware/requirePermission.middleware");
 
 /*
+  Receive OTA Booking
+*/
+router.post(
+  "/bookings",
+  integrationsController.receiveIntegrationBooking
+);
+
+/*
   Get All Integrations
 */
 router.get(
