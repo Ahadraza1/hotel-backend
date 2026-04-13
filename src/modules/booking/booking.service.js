@@ -5,6 +5,7 @@ const Branch = require("../branch/branch.model");
 const guestService = require("../crm/guest.service");
 const branchSettingsService = require("../branchSettings/branchSettings.service");
 const notificationService = require("../notification/notification.service");
+const roomPricingService = require("../roomPricing/roomPricing.service");
 const mongoose = require("mongoose");
 const { v4: uuidv4 } = require("uuid");
 const { ensureActiveBranch } = require("../../utils/workspaceScope");
@@ -279,7 +280,10 @@ const createOrSyncBookingInvoice = async ({ booking, user, session }) => {
     await branchSettingsService.getFinancialSettingsByBranchId(booking.branchId);
   const amounts = calculateBookingAmounts({
     nights: booking.nights,
-    roomPricePerNight: room.pricePerNight,
+    roomPricePerNight:
+      booking.roomPricePerNight !== undefined
+        ? booking.roomPricePerNight
+        : room.pricePerNight,
     services: booking.services || [],
     taxPercentage: financialSettings.taxPercentage,
   });
@@ -400,7 +404,10 @@ const serializeBooking = async (booking) => {
           roomNumber: room.roomNumber,
           roomType: room.roomType,
           floor: room.floor,
-          pricePerNight: room.pricePerNight,
+          pricePerNight:
+            populatedBooking.roomPricePerNight !== undefined
+              ? populatedBooking.roomPricePerNight
+              : room.pricePerNight,
         }
       : null,
     branch: branch
@@ -536,7 +543,14 @@ exports.createBooking = async (data, user) => {
 
     const nights =
       (checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60 * 24);
-    const roomCharges = nights * room.pricePerNight;
+    const pricingSummary = await roomPricingService.calculateStayPricingForRoom({
+      room,
+      branchId: branch._id,
+      checkInDate,
+      checkOutDate,
+      session,
+    });
+    const roomCharges = pricingSummary.totalPrice;
 
     const normalizedMealType = normalizeMealType(mealType);
     const bookingArr = await Booking.create(
@@ -571,6 +585,7 @@ exports.createBooking = async (data, user) => {
           checkOutDate,
           checkOutTime,
           nights,
+          roomPricePerNight: pricingSummary.averageNightlyRate,
           services: [],
           totalAmount: roomCharges,
           paidAmount: 0,
@@ -734,7 +749,14 @@ exports.updateBooking = async (bookingId, data, user) => {
 
     const nights =
       (checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60 * 24);
-    const roomCharges = nights * room.pricePerNight;
+    const pricingSummary = await roomPricingService.calculateStayPricingForRoom({
+      room,
+      branchId: booking.branchId,
+      checkInDate,
+      checkOutDate,
+      session,
+    });
+    const roomCharges = pricingSummary.totalPrice;
 
     const normalizedMealType = normalizeMealType(mealType);
     booking.roomId = room._id;
@@ -765,6 +787,7 @@ exports.updateBooking = async (bookingId, data, user) => {
     booking.checkOutDate = checkOutDate;
     booking.checkOutTime = checkOutTime;
     booking.nights = nights;
+    booking.roomPricePerNight = pricingSummary.averageNightlyRate;
     booking.totalAmount = roomCharges;
     booking.updatedBy = user.id || user.userId;
 

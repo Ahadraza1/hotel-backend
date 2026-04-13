@@ -37,10 +37,17 @@ const roomSchema = new mongoose.Schema(
       default: 1,
     },
 
+    roomTypeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "RoomType",
+      default: null,
+      index: true,
+    },
+
     roomType: {
       type: String,
-      enum: ["STANDARD", "DELUXE", "SUITE", "PRESIDENTIAL"],
       required: true,
+      trim: true,
     },
 
     pricePerNight: {

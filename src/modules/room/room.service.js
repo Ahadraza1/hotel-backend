@@ -1,6 +1,8 @@
 const Room = require("./room.model");
 const Booking = require("../booking/booking.model");
 const Branch = require("../branch/branch.model");
+const roomTypeService = require("../roomType/roomType.service");
+const roomPricingService = require("../roomPricing/roomPricing.service");
 const {
   ROOM_STATUSES,
   MANUAL_OVERRIDE_STATUSES,
@@ -32,7 +34,9 @@ exports.createRoom = async (data, user) => {
 
   const {
     roomNumber,
+    floor,
     roomType,
+    roomTypeId,
     pricePerNight,
     capacity,
     amenities,
@@ -89,11 +93,19 @@ exports.createRoom = async (data, user) => {
     throw error;
   }
 
+  const resolvedRoomType = await roomTypeService.resolveRoomType({
+    roomTypeId,
+    roomTypeName: roomType,
+    user,
+  });
+
   return Room.create({
     organizationId: branch.organizationId,
     branchId: branch._id,
     roomNumber,
-    roomType,
+    floor: Number(floor || 1),
+    roomTypeId: resolvedRoomType._id,
+    roomType: resolvedRoomType.name,
     pricePerNight,
     capacity,
     amenities,
@@ -157,8 +169,15 @@ exports.getRooms = async (user, checkInDate, checkOutDate, totalGuests, status) 
     return true;
   });
 
+  const roomsWithPricing = await roomPricingService.applyPricingToRooms({
+    rooms,
+    branchId: user.branchId,
+    checkInDate,
+    checkOutDate,
+  });
+
   if (!checkInDate || !checkOutDate) {
-    return rooms;
+    return roomsWithPricing;
   }
 
   const checkIn = new Date(checkInDate);
@@ -181,7 +200,7 @@ exports.getRooms = async (user, checkInDate, checkOutDate, totalGuests, status) 
     booking.roomId.toString(),
   );
 
-  return rooms.filter((room) => !bookedRoomIds.includes(room._id.toString()));
+  return roomsWithPricing.filter((room) => !bookedRoomIds.includes(room._id.toString()));
 };
 
 exports.updateRoom = async (roomId, data, user) => {
@@ -202,7 +221,24 @@ exports.updateRoom = async (roomId, data, user) => {
     (user.role === "BRANCH_MANAGER" &&
       room.branchId?.toString() === user.branchId)
   ) {
-    return Room.findByIdAndUpdate(roomId, data, { new: true });
+    const updatePayload = { ...data, updatedBy: user._id };
+
+    if (data.roomType || data.roomTypeId) {
+      const resolvedRoomType = await roomTypeService.resolveRoomType({
+        roomTypeId: data.roomTypeId,
+        roomTypeName: data.roomType || room.roomType,
+        user,
+      });
+
+      updatePayload.roomTypeId = resolvedRoomType._id;
+      updatePayload.roomType = resolvedRoomType.name;
+    }
+
+    if (data.floor !== undefined) {
+      updatePayload.floor = Number(data.floor);
+    }
+
+    return Room.findByIdAndUpdate(roomId, updatePayload, { new: true });
   }
 
   const error = new Error("Access denied");

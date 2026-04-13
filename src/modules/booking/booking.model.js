@@ -195,6 +195,12 @@ const bookingSchema = new mongoose.Schema(
       min: 1,
     },
 
+    roomPricePerNight: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+
     actualCheckIn: {
       type: Date,
       default: null,
