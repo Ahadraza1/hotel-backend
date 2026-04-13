@@ -33,6 +33,7 @@ const serviceRoutes = require("./modules/service/service.routes");
 const subscriptionRoutes = require("./modules/subscription/subscription.routes");
 const subscriptionController = require("./modules/subscription/subscription.controller");
 const contactRoutes = require("./modules/contact/contact.routes");
+const reportsRoutes = require("./modules/reports/reports.routes");
 
 
 // ✅ Serve uploaded files
@@ -46,6 +47,7 @@ router.use("/branches", branchRoutes);
 router.use("/branch-settings", branchSettingsRoutes);
 router.use("/services", serviceRoutes);
 router.use("/subscriptions", subscriptionRoutes);
+router.use("/reports", reportsRoutes);
 router.use("/users", userRoutes);
 router.use("/roles", roleRoutes);
 router.use("/permissions", permissionRoutes);

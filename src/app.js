@@ -82,4 +82,45 @@ app.use("/api", routes);
 
 app.use(errorHandler);
 
+const listEndpoints = require('express-list-endpoints');
+
+setTimeout(() => {
+  console.log("📌 ALL API ENDPOINTS:\n");
+
+  const endpoints = listEndpoints(app);
+
+  endpoints.forEach((ep) => {
+    console.log(`${ep.methods.join(",")}  ${ep.path}`);
+  });
+
+}, 1000);
+
+// ✅ API Docs Endpoint (returns all endpoints)
+// ✅ API Docs Endpoint (returns all endpoints)
+app.get("/api/docs", (req, res) => {
+  const routes = [];
+
+  const extractRoutes = (stack, basePath = "") => {
+    stack.forEach((layer) => {
+      if (layer.route) {
+        const path = basePath + layer.route.path;
+        const methods = Object.keys(layer.route.methods).map((m) => m.toUpperCase());
+
+        routes.push({ path, methods });
+      } else if (layer.name === "router" && layer.handle && layer.handle.stack) {
+        extractRoutes(layer.handle.stack, basePath);
+      }
+    });
+  };
+
+  const stack = (app._router && app._router.stack) || (app.router && app.router.stack) || [];
+  extractRoutes(stack);
+
+  res.json({
+    success: true,
+    total: routes.length,
+    endpoints: routes,
+  });
+});
+
 module.exports = app;
