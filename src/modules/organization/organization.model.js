@@ -135,6 +135,10 @@ const organizationSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
+    featureFlags: {
+      type: [String],
+      default: [],
+    },
   },
   { timestamps: true },
 );

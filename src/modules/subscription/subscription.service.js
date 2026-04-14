@@ -87,6 +87,7 @@ const sanitizePlanPayload = (payload) => {
     yearlyPrice,
     branchLimit: normalizeBranchLimit(payload.branchLimit),
     features: normalizeFeatures(payload.features),
+    featureFlags: Array.isArray(payload.featureFlags) ? payload.featureFlags : [],
     isActive: typeof payload.isActive === "boolean" ? payload.isActive : true,
     isPopular: typeof payload.isPopular === "boolean" ? payload.isPopular : false,
   };
@@ -99,6 +100,7 @@ const buildPlanSnapshot = (plan) => ({
   yearlyPrice: Number(plan.yearlyPrice || 0),
   branchLimit: plan.branchLimit ?? null,
   features: normalizeFeatures(plan.features),
+  featureFlags: Array.isArray(plan.featureFlags) ? plan.featureFlags : [],
 });
 
 const getPlanAmount = (plan, billingCycle) =>
@@ -473,6 +475,7 @@ const serializePlan = (plan) => ({
   yearlyPrice: plan.yearlyPrice,
   branchLimit: plan.branchLimit ?? null,
   features: normalizeFeatures(plan.features),
+  featureFlags: Array.isArray(plan.featureFlags) ? plan.featureFlags : [],
   isActive: !!plan.isActive,
   isPopular: !!plan.isPopular,
   isFreeTrialPlan: isFreePlan(plan, "monthly") && isFreePlan(plan, "yearly"),
@@ -743,6 +746,17 @@ exports.updatePlan = async (planId, payload) => {
     },
   );
 
+  // 🔥 Update organization featureFlags if plan is updated
+  const subscriptions = await OrganizationSubscription.find({ planId }).select("organizationId");
+  const organizationIds = subscriptions.map(s => s.organizationId);
+  
+  if (organizationIds.length > 0) {
+    await Organization.updateMany(
+      { organizationId: { $in: organizationIds } },
+      { $set: { featureFlags: plan.featureFlags || [] } }
+    );
+  }
+
   return serializePlan(plan);
 };
 
@@ -831,6 +845,11 @@ exports.assignPlanToOrganization = async ({
       upsert: true,
       setDefaultsOnInsert: true,
     },
+  );
+
+  await Organization.findOneAndUpdate(
+    { organizationId },
+    { featureFlags: plan.featureFlags || [] }
   );
 
   await recordSubscriptionPayment({

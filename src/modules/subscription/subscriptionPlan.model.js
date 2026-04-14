@@ -40,6 +40,19 @@ const subscriptionPlanSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    featureFlags: {
+      type: [String],
+      enum: [
+        "ROOM_MANAGEMENT",
+        "HOUSEKEEPING",
+        "INVENTORY",
+        "HR",
+        "ANALYTICS",
+        "INVOICE",
+        "RESTAURANT",
+      ],
+      default: [],
+    },
   },
   { timestamps: true },
 );

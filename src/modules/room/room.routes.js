@@ -5,6 +5,7 @@ const roomController = require("./room.controller");
 
 const requireAuth = require("../../middleware/requireAuth.middleware");
 const requirePermission = require("../../middleware/requirePermission.middleware");
+const { requireFeatureFlag } = require("../../middleware/subscriptionAccess.middleware");
 const auditMiddleware = require("../audit/audit.middleware");
 
 /*
@@ -13,6 +14,7 @@ const auditMiddleware = require("../audit/audit.middleware");
 router.post(
   "/",
   requireAuth,
+  requireFeatureFlag("ROOM_MANAGEMENT"),
   requirePermission("CREATE_ROOM"),
   roomController.createRoom
 );
@@ -23,6 +25,7 @@ router.post(
 router.get(
   "/",
   requireAuth,
+  requireFeatureFlag("ROOM_MANAGEMENT"),
   requirePermission(["ACCESS_ROOMS", "VIEW_ROOM"]),
   roomController.getRooms
 );
@@ -33,6 +36,7 @@ router.get(
 router.put(
   "/:roomId",
   requireAuth,
+  requireFeatureFlag("ROOM_MANAGEMENT"),
   requirePermission("UPDATE_ROOM"),
   auditMiddleware("UPDATE_ROOM", "ROOM", "Updated room"),
   roomController.updateRoom
@@ -44,6 +48,7 @@ router.put(
 router.patch(
   "/:roomId/status",
   requireAuth,
+  requireFeatureFlag("ROOM_MANAGEMENT"),
   requirePermission("UPDATE_ROOM"),
   auditMiddleware("UPDATE_ROOM_STATUS", "ROOM", "Updated room status"),
   roomController.changeRoomStatus
@@ -55,6 +60,7 @@ router.patch(
 router.patch(
   "/:roomId/deactivate",
   requireAuth,
+  requireFeatureFlag("ROOM_MANAGEMENT"),
   requirePermission("UPDATE_ROOM"),
   auditMiddleware("DEACTIVATE_ROOM", "ROOM", "Deactivated room"),
   roomController.deactivateRoom
@@ -66,6 +72,7 @@ router.patch(
 router.patch(
   "/:roomId/restore",
   requireAuth,
+  requireFeatureFlag("ROOM_MANAGEMENT"),
   requirePermission("UPDATE_ROOM"),
   auditMiddleware("RESTORE_ROOM", "ROOM", "Restored room"),
   roomController.restoreRoom

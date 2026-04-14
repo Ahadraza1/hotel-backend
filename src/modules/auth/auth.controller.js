@@ -840,6 +840,9 @@ exports.login = async (req, res) => {
 
     const { permissions, roleDoc } = await resolveUserPermissions(user);
     const subscriptionAccess = await getSubscriptionAccessForUser(user);
+    const organization = user.organizationId
+      ? await Organization.findOne({ organizationId: user.organizationId }).lean()
+      : null;
 
     console.log("LOGIN ROLE DATA", {
       userId: user._id?.toString(),
@@ -1316,6 +1319,9 @@ exports.getMe = async (req, res) => {
     }
 
     const { permissions, roleDoc } = await resolveUserPermissions(user);
+    const organization = user.organizationId
+      ? await Organization.findOne({ organizationId: user.organizationId }).lean()
+      : null;
     const subscriptionAccess = await getSubscriptionAccessForUser(user);
 
     console.log("AUTH ME ROLE DATA", {
@@ -1353,6 +1359,15 @@ exports.getMe = async (req, res) => {
       organizationId: user.organizationId || null,
       branchId: user.branchId || null,
       isPlatformAdmin: user.isPlatformAdmin || false,
+      featureFlags: organization?.featureFlags || [],
+      organization: organization
+        ? {
+            id: organization._id,
+            organizationId: organization.organizationId,
+            name: organization.name,
+            featureFlags: organization.featureFlags || [],
+          }
+        : null,
       subscriptionAccess,
     });
   } catch (error) {
