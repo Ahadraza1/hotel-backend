@@ -88,6 +88,7 @@ const sanitizePlanPayload = (payload) => {
     branchLimit: normalizeBranchLimit(payload.branchLimit),
     features: normalizeFeatures(payload.features),
     isActive: typeof payload.isActive === "boolean" ? payload.isActive : true,
+    isPopular: typeof payload.isPopular === "boolean" ? payload.isPopular : false,
   };
 };
 
@@ -473,6 +474,7 @@ const serializePlan = (plan) => ({
   branchLimit: plan.branchLimit ?? null,
   features: normalizeFeatures(plan.features),
   isActive: !!plan.isActive,
+  isPopular: !!plan.isPopular,
   isFreeTrialPlan: isFreePlan(plan, "monthly") && isFreePlan(plan, "yearly"),
   createdAt: plan.createdAt,
   updatedAt: plan.updatedAt,
@@ -488,7 +490,7 @@ const serializePublicPlan = (plan, index, plansLength) => ({
   features: normalizeFeatures(plan.features),
   maxBranches: plan.branchLimit ?? null,
   isActive: !!plan.isActive,
-  isPopular: plansLength >= 3 && index === 1,
+  isPopular: !!plan.isPopular,
 });
 
 const getOrganizationBranchCount = async (organizationId) =>
@@ -697,6 +699,8 @@ exports.updatePlan = async (planId, payload) => {
     ...payload,
     isActive:
       typeof payload.isActive === "boolean" ? payload.isActive : plan.isActive,
+    isPopular:
+      typeof payload.isPopular === "boolean" ? payload.isPopular : plan.isPopular,
   });
 
   const duplicate = await SubscriptionPlan.findOne({
